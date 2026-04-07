@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "outlier-engine"
+version = "0.1.0"
+description = "Inference engine for ternary MoE language models"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "transformers>=4.40",
+    "huggingface_hub>=0.20",
+    "safetensors>=0.4",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+mlx = ["mlx>=0.10"]
+
+[project.scripts]
+outlier-engine = "outlier_engine.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["outlier_engine*"]
