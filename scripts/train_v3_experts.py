@@ -30,6 +30,7 @@ DEFAULT_MODEL_REF = "Outlier-Ai/Outlier-10B"
 DEFAULT_CORPUS_DIR = Path("data/distillation")
 DEFAULT_OUTPUT_DIR = Path("checkpoints/outlier-10b-v3")
 TRAINING_LOG_PATH = Path("data/distillation/training_log.jsonl")
+TRAINING_SUMMARY_PATH = Path("checkpoints/outlier-10b-v3/training_summary.json")
 
 TEACHER_TEMP = 4.0
 STUDENT_TEMP = 2.0
@@ -551,6 +552,11 @@ def append_jsonl(path: Path, record: dict) -> None:
         handle.write(json.dumps(record) + "\n")
 
 
+def write_summary(path: Path, record: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+
+
 def save_quantized_expert(output_dir: Path, spec: ExpertSpec, expert: Float32Expert) -> Path:
     experts_dir = output_dir / "experts"
     experts_dir.mkdir(parents=True, exist_ok=True)
@@ -827,6 +833,7 @@ def run_quality_check(checkpoint_dir: Path, device: str) -> List[Tuple[str, str]
 def measure_diversity(experts_dir: Path, n_layers: int, n_experts: int) -> Dict[str, float]:
     layer_scores: List[float] = []
     sparsities: List[float] = []
+    min_pairwise = 1.0
     for layer_idx in range(n_layers):
         vectors = []
         for expert_idx in range(n_experts):
@@ -847,19 +854,23 @@ def measure_diversity(experts_dir: Path, n_layers: int, n_experts: int) -> Dict[
             for j in range(i + 1, len(vectors)):
                 cos = F.cosine_similarity(vectors[i].unsqueeze(0), vectors[j].unsqueeze(0)).item()
                 cosines.append(cos)
+                min_pairwise = min(min_pairwise, cos)
         if cosines:
             layer_scores.append(sum(cosines) / len(cosines))
     return {
         "avg_pairwise_cosine": sum(layer_scores) / len(layer_scores) if layer_scores else 1.0,
+        "min_pairwise_cosine": min_pairwise,
         "avg_delta_sparsity": sum(sparsities) / len(sparsities) if sparsities else 1.0,
         "v1_pairwise_cosine": 1.0,
     }
 
 
-def list_expert_specs(cfg: dict) -> List[ExpertSpec]:
+def list_expert_specs(cfg: dict, start_layer: Optional[int] = None, end_layer: Optional[int] = None) -> List[ExpertSpec]:
+    first = 0 if start_layer is None else start_layer
+    last = int(cfg["n_layers"]) - 1 if end_layer is None else end_layer
     return [
         ExpertSpec(layer_idx=layer_idx, expert_idx=expert_idx)
-        for layer_idx in range(int(cfg["n_layers"]))
+        for layer_idx in range(first, last + 1)
         for expert_idx in range(int(cfg["n_experts"]))
     ]
 
@@ -873,6 +884,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--steps-per-expert", type=int, default=EXPERT_STEPS)
     parser.add_argument("--router-steps", type=int, default=ROUTER_STEPS)
     parser.add_argument("--max-experts", type=int, default=None, help="Limit expert count for smoke runs.")
+    parser.add_argument("--start-layer", type=int, default=None, help="Inclusive start layer for subset training.")
+    parser.add_argument("--end-layer", type=int, default=None, help="Inclusive end layer for subset training.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--estimate-only", action="store_true")
     parser.add_argument("--skip-router", action="store_true")
@@ -904,9 +917,11 @@ def main() -> None:
     if args.estimate_only:
         return
 
-    specs = list_expert_specs(cfg)
+    specs = list_expert_specs(cfg, args.start_layer, args.end_layer)
     if args.max_experts is not None:
         specs = specs[: args.max_experts]
+    if not specs:
+        raise RuntimeError("No experts selected for training.")
 
     model, _, _ = build_shared_only_backbone(args.model_ref, args.device)
     device = torch.device(args.device)
@@ -925,6 +940,27 @@ def main() -> None:
         if idx == 1 and len(specs) > 1:
             total_minutes = (summary["time_s"] / 60.0) * len(specs)
             log(f"Estimated total expert-training time: {total_minutes/60.0:.1f} hours")
+        running_diversity = measure_diversity(output_dir / "experts", cfg["n_layers"], cfg["n_experts"])
+        write_summary(
+            abs_path(TRAINING_SUMMARY_PATH),
+            {
+                "status": "running",
+                "model_ref": args.model_ref,
+                "layers": {
+                    "start": args.start_layer,
+                    "end": args.end_layer,
+                },
+                "experts_target": len(specs),
+                "experts_trained": len(summaries),
+                "steps_per_expert": args.steps_per_expert,
+                "elapsed_min": (time.perf_counter() - start) / 60.0,
+                "last_expert": summary,
+                "avg_final_loss": sum(item["final_loss"] for item in summaries) / len(summaries),
+                "avg_delta_sparsity": sum(item["delta_sparsity"] for item in summaries) / len(summaries),
+                "avg_cosine_to_shared": sum(item["cosine_to_shared"] for item in summaries) / len(summaries),
+                "diversity": running_diversity,
+            },
+        )
 
     del model
     gc.collect()
@@ -949,16 +985,27 @@ def main() -> None:
     diversity = measure_diversity(output_dir / "experts", cfg["n_layers"], cfg["n_experts"])
     elapsed = time.perf_counter() - start
     summary = {
+        "status": "complete",
+        "model_ref": args.model_ref,
+        "layers": {
+            "start": args.start_layer,
+            "end": args.end_layer,
+        },
         "experts_trained": len(summaries),
+        "experts_target": len(specs),
         "steps_per_expert": args.steps_per_expert,
         "router_summary": router_summary,
         "checkpoint_size_bytes": checkpoint_size,
         "checkpoint_size_gb": checkpoint_size / 1024**3,
         "total_time_min": elapsed / 60.0,
         "peak_memory_gb": rss_gb(),
+        "avg_final_loss": sum(item["final_loss"] for item in summaries) / len(summaries),
+        "avg_delta_sparsity": sum(item["delta_sparsity"] for item in summaries) / len(summaries),
+        "avg_cosine_to_shared": sum(item["cosine_to_shared"] for item in summaries) / len(summaries),
         "diversity": diversity,
     }
     append_jsonl(TRAINING_LOG_PATH, {"phase": "run_complete", **summary})
+    write_summary(abs_path(TRAINING_SUMMARY_PATH), summary)
 
     log("=== V3 SUMMARY ===")
     log(f"Total experts trained: {len(summaries)}")
@@ -966,7 +1013,8 @@ def main() -> None:
     log(f"Generation time: {summary['total_time_min']:.1f} minutes")
     log(f"Peak memory: {summary['peak_memory_gb']:.2f} GB")
     log(
-        f"Expert diversity: V1 cosine=1.0000 -> V3 cosine={diversity['avg_pairwise_cosine']:.4f}; "
+        f"Expert diversity: V1 cosine=1.0000 -> V3 avg cosine={diversity['avg_pairwise_cosine']:.4f}; "
+        f"min pairwise={diversity['min_pairwise_cosine']:.4f}; "
         f"avg delta sparsity={diversity['avg_delta_sparsity']:.4f}"
     )
     if router_summary is not None:
