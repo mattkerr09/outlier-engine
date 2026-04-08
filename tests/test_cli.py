@@ -19,3 +19,12 @@ def test_bench_command_parses_args():
     assert args.model == "Outlier-Ai/Outlier-10B"
     assert args.device == "mps"
     assert args.max_tokens == 20
+
+
+def test_repack_command_parses_args():
+    parser = build_parser()
+    args = parser.parse_args(["repack", "Outlier-Ai/Outlier-10B", "--output-dir", "/tmp/packed"])
+
+    assert args.command == "repack"
+    assert args.model == "Outlier-Ai/Outlier-10B"
+    assert args.output_dir == "/tmp/packed"

@@ -11,6 +11,7 @@ import torch
 
 from .generate import benchmark_generation, stream_generate
 from .loader import inspect_model, load_model
+from .paging import _default_packed_dir, repack_ternary_experts
 
 BENCH_PROMPTS = [
     ("short", "Hello"),
@@ -51,6 +52,11 @@ def build_parser() -> argparse.ArgumentParser:
     bench_parser.add_argument("--hf-token", default=None, dest="hf_token")
     bench_parser.add_argument("--paged", action="store_true")
     bench_parser.add_argument("--full", action="store_true")
+
+    repack_parser = subparsers.add_parser("repack", help="Repack legacy MoE experts into local TQ1_0 cache.")
+    repack_parser.add_argument("model")
+    repack_parser.add_argument("--output-dir", default=str(_default_packed_dir()), dest="output_dir")
+    repack_parser.add_argument("--hf-token", default=None, dest="hf_token")
 
     return parser
 
@@ -142,6 +148,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                 f"({cache_stats['hit_rate']:.1%} hit rate), "
                 f"{cache_stats['evictions']} evictions"
             )
+            if cache_stats.get("disk_loads"):
+                print(
+                    "Disk loads: "
+                    f"{cache_stats['disk_loads']} total, "
+                    f"{cache_stats['avg_disk_load_ms']:.1f} ms average"
+                )
         return 0
 
     if args.command == "bench":
@@ -178,6 +190,21 @@ def main(argv: Optional[list[str]] = None) -> int:
             print("Peak memory: n/a")
         else:
             print(f"Peak memory: {peak_memory:.1f} GB")
+        return 0
+
+    if args.command == "repack":
+        meta = repack_ternary_experts(
+            args.model,
+            output_dir=args.output_dir,
+            token=_resolve_token(args),
+        )
+        print(f"Repacked experts for {args.model}")
+        print(f"Output dir: {args.output_dir}")
+        print(f"Ternary tensors: {meta['ternary_tensors']}")
+        print(f"Scale tensors: {meta['scale_tensors']}")
+        print(f"Original expert data: {meta['original_mb']:.1f} MB")
+        print(f"Packed expert data: {meta['packed_mb']:.1f} MB")
+        print(f"Compression ratio: {meta['compression_ratio']:.2f}x")
         return 0
 
     parser.error(f"unknown command: {args.command}")

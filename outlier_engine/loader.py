@@ -12,7 +12,7 @@ import torch
 from huggingface_hub import HfApi, hf_hub_download, snapshot_download
 
 from .model import OutlierForCausalLM
-from .paging import OutlierPagedModel
+from .paging import OutlierPagedModel, _default_packed_dir
 from .tokenizer import OutlierTokenizer, load_tokenizer
 
 _LEGACY_MODEL_ALIASES = {
@@ -171,6 +171,7 @@ def load_model(
     paged: Optional[bool] = None,
     max_experts_in_memory: int = 4,
     max_warm_cache: int = 16,
+    packed_experts_dir: Optional[str] = None,
 ) -> LoadedOutlier:
     use_alias = paged is not True
     resolved_ref = _canonical_model_ref(model_ref) if use_alias else model_ref
@@ -191,11 +192,25 @@ def load_model(
             selected_device = candidate
             if paged:
                 backend = "paged"
+                packed_dir = None
+                if packed_experts_dir:
+                    packed_dir = packed_experts_dir
+                else:
+                    default_packed = _default_packed_dir()
+                    if default_packed.joinpath("index.json").exists():
+                        packed_dir = str(default_packed)
+                    else:
+                        warnings.warn(
+                            f"No packed expert cache found at {default_packed}. "
+                            f"Run `outlier-engine repack {model_ref}` first for faster paged loads.",
+                            stacklevel=2,
+                        )
                 model = OutlierPagedModel(
                     str(model_dir),
                     device=candidate,
                     max_experts_in_memory=max_experts_in_memory,
                     max_warm_cache=max_warm_cache,
+                    packed_experts_dir=packed_dir,
                 )
             else:
                 if config.get("model_type") == "outlier_moe":

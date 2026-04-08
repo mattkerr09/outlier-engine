@@ -3,7 +3,7 @@ OutlierPagedModel v0.3 — expert paging with ternary memory optimisations.
 OUTLIER-RUNTIME-002 (paging) + OUTLIER-RUNTIME-003 (memory reduction)
 
 Memory optimisations in v0.3:
-  1. Ternary experts stored as 2-bit packed uint8 in CPU warm cache (4x vs int8).
+  1. Ternary experts stored as packed uint8 in CPU warm cache / local repack cache.
   2. On device: experts stored as int8; matmul via ternary_matmul_direct (never
      materialises float copies of the full weight matrix).
   3. Shared expert quantised to INT8 at load time (saves ~5 GB vs FP16).
@@ -50,11 +50,13 @@ from __future__ import annotations
 import gc
 import json
 import re
+import time
 import warnings
 from collections import OrderedDict
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -180,8 +182,8 @@ class _ExpertWeights:
 
     packed=False: weights are int8  {-1, 0, +1}  (native disk format)
                   ~194 MB per expert for outlier-7b-v0
-    packed=True:  weights are uint8 (2-bit packed, 4 values/byte)
-                  ~48 MB per expert for outlier-7b-v0  (4x smaller)
+    packed=True:  weights are uint8 in a compact cache format
+                  either 2-bit or TQ1_0 base-3 packed.
 
     Device cache stores int8 (fast matmul via ternary_matmul_direct).
     CPU warm cache stores packed uint8 (memory-efficient).
@@ -192,6 +194,8 @@ class _ExpertWeights:
         "up_w",   "up_s",
         "down_w", "down_s",
         "packed",
+        "packed_format",
+        "shapes",
     )
 
     def __init__(
@@ -200,11 +204,15 @@ class _ExpertWeights:
         up_w:   torch.Tensor, up_s:   torch.Tensor,
         down_w: torch.Tensor, down_s: torch.Tensor,
         packed: bool = False,
+        packed_format: str = "raw",
+        shapes: Optional[Dict[str, Tuple[int, ...]]] = None,
     ) -> None:
         self.gate_w = gate_w;  self.gate_s = gate_s
         self.up_w   = up_w;    self.up_s   = up_s
         self.down_w = down_w;  self.down_s = down_s
         self.packed = packed
+        self.packed_format = packed_format
+        self.shapes = shapes or {}
 
     def to(self, device: torch.device) -> "_ExpertWeights":
         return _ExpertWeights(
@@ -212,13 +220,15 @@ class _ExpertWeights:
             self.up_w.to(device),   self.up_s.to(device),
             self.down_w.to(device), self.down_s.to(device),
             packed=self.packed,
+            packed_format=self.packed_format,
+            shapes=dict(self.shapes),
         )
 
     def cpu(self) -> "_ExpertWeights":
         return self.to(torch.device("cpu"))
 
     # ------------------------------------------------------------------
-    # 2-bit packing / unpacking
+    # Packing / unpacking
     # ------------------------------------------------------------------
 
     def pack_2bit(self) -> "_ExpertWeights":
@@ -231,23 +241,58 @@ class _ExpertWeights:
             pack_ternary_2bit(self.up_w),   self.up_s,
             pack_ternary_2bit(self.down_w), self.down_s,
             packed=True,
+            packed_format="2bit",
+            shapes={
+                "gate": tuple(self.gate_w.shape),
+                "up": tuple(self.up_w.shape),
+                "down": tuple(self.down_w.shape),
+            },
+        )
+
+    def pack_tq10(self) -> "_ExpertWeights":
+        """Pack int8 ternary weights → TQ1_0 uint8 (5 values per byte)."""
+        if self.packed and self.packed_format == "tq10":
+            return self
+        return _ExpertWeights(
+            pack_ternary_tq10(self.gate_w), self.gate_s,
+            pack_ternary_tq10(self.up_w),   self.up_s,
+            pack_ternary_tq10(self.down_w), self.down_s,
+            packed=True,
+            packed_format="tq10",
+            shapes={
+                "gate": tuple(self.gate_w.shape),
+                "up": tuple(self.up_w.shape),
+                "down": tuple(self.down_w.shape),
+            },
         )
 
     def unpack_to_int8(self) -> "_ExpertWeights":
-        """Unpack 2-bit uint8 → int8 (for device compute)."""
+        """Unpack cached uint8 storage back to int8 ternary weights."""
         if not self.packed:
             return self
-        from .ternary_ops import unpack_ternary_2bit
-        # packed_cols * 4 == original_in_features (valid when in_features % 4 == 0,
-        # which holds for hidden_dim=3584 and intermediate_dim=18944 in outlier-7b-v0)
-        gate_in = self.gate_w.shape[1] * 4
-        down_in = self.down_w.shape[1] * 4
-        return _ExpertWeights(
-            unpack_ternary_2bit(self.gate_w, gate_in), self.gate_s,
-            unpack_ternary_2bit(self.up_w,   gate_in), self.up_s,
-            unpack_ternary_2bit(self.down_w, down_in), self.down_s,
-            packed=False,
-        )
+        if self.packed_format == "2bit":
+            from .ternary_ops import unpack_ternary_2bit
+            gate_in = self.gate_w.shape[1] * 4
+            down_in = self.down_w.shape[1] * 4
+            return _ExpertWeights(
+                unpack_ternary_2bit(self.gate_w, gate_in), self.gate_s,
+                unpack_ternary_2bit(self.up_w,   gate_in), self.up_s,
+                unpack_ternary_2bit(self.down_w, down_in), self.down_s,
+                packed=False,
+            )
+        if self.packed_format == "tq10":
+            gate_shape = self.shapes.get("gate")
+            up_shape = self.shapes.get("up")
+            down_shape = self.shapes.get("down")
+            if not gate_shape or not up_shape or not down_shape:
+                raise RuntimeError("TQ1_0 packed expert missing original shapes.")
+            return _ExpertWeights(
+                unpack_ternary_tq10(self.gate_w, gate_shape), self.gate_s,
+                unpack_ternary_tq10(self.up_w,   up_shape), self.up_s,
+                unpack_ternary_tq10(self.down_w, down_shape), self.down_s,
+                packed=False,
+            )
+        raise RuntimeError(f"Unsupported packed format: {self.packed_format}")
 
     # ------------------------------------------------------------------
     # Forward compute
@@ -265,17 +310,115 @@ class _ExpertWeights:
         Returns: (batch, hidden_dim)   float32
         """
         if self.packed:
-            from .ternary_ops import ternary_matmul_packed
-            gate_in = self.gate_w.shape[1] * 4
-            down_in = self.down_w.shape[1] * 4
-            gate = F.silu(ternary_matmul_packed(x, self.gate_w, self.gate_s, gate_in))
-            up   = ternary_matmul_packed(x, self.up_w,   self.up_s,   gate_in)
-            return ternary_matmul_packed(gate * up, self.down_w, self.down_s, down_in)
-        else:
-            from .ternary_ops import ternary_matmul_direct
-            gate = F.silu(ternary_matmul_direct(x, self.gate_w, self.gate_s))
-            up   = ternary_matmul_direct(x, self.up_w, self.up_s)
-            return ternary_matmul_direct(gate * up, self.down_w, self.down_s)
+            unpacked = self.unpack_to_int8()
+            return unpacked.run(x)
+        from .ternary_ops import ternary_matmul_direct
+        gate = F.silu(ternary_matmul_direct(x, self.gate_w, self.gate_s))
+        up   = ternary_matmul_direct(x, self.up_w, self.up_s)
+        return ternary_matmul_direct(gate * up, self.down_w, self.down_s)
+
+
+def pack_ternary_tq10(tensor: torch.Tensor) -> torch.Tensor:
+    """Pack ternary {-1,0,+1} values into base-3 TQ1_0 bytes (5 values / byte)."""
+    flat = tensor.reshape(-1).to(torch.int16)
+    mapped = flat + 1
+    pad_len = (-mapped.numel()) % 5
+    if pad_len:
+        mapped = torch.cat([mapped, torch.ones(pad_len, dtype=torch.int16)])
+    groups = mapped.view(-1, 5)
+    multipliers = torch.tensor([1, 3, 9, 27, 81], dtype=torch.int16, device=groups.device)
+    packed = (groups * multipliers).sum(dim=1).to(torch.uint8)
+    return packed
+
+
+def unpack_ternary_tq10(packed: torch.Tensor, shape: Tuple[int, ...]) -> torch.Tensor:
+    """Unpack TQ1_0 uint8 bytes back into an int8 ternary tensor."""
+    total = 1
+    for dim in shape:
+        total *= dim
+    values = packed.reshape(-1).to(torch.int16)
+    digits = [((values // divisor) % 3) for divisor in (1, 3, 9, 27, 81)]
+    unpacked = torch.stack(digits, dim=1).reshape(-1)[:total] - 1
+    return unpacked.reshape(shape).to(torch.int8)
+
+
+def _default_packed_dir() -> Path:
+    return Path.home() / "outlier-engine" / "packed_experts"
+
+
+def repack_ternary_experts(
+    model_ref: str,
+    *,
+    output_dir: Optional[str] = None,
+    token: Optional[str] = None,
+) -> Dict[str, float]:
+    """Repack legacy MoE expert tensors into local TQ1_0 binary files."""
+    from huggingface_hub import snapshot_download
+    from safetensors import safe_open
+
+    model_dir = Path(
+        snapshot_download(
+            repo_id=model_ref,
+            token=token,
+            allow_patterns=["*.json", "*.safetensors"],
+        )
+    )
+    packed_dir = Path(output_dir).expanduser() if output_dir else _default_packed_dir()
+    packed_dir.mkdir(parents=True, exist_ok=True)
+
+    index: Dict[str, Dict[str, object]] = {}
+    total_original = 0
+    total_packed = 0
+    ternary_tensors = 0
+    scale_tensors = 0
+
+    for shard in sorted(model_dir.glob("*.safetensors")):
+        with safe_open(str(shard), framework="pt", device="cpu") as f:
+            for key in f.keys():
+                if "experts." not in key or "shared_expert" in key:
+                    continue
+                tensor = f.get_tensor(key)
+                filename = key.replace(".", "_") + ".bin"
+                path = packed_dir / filename
+                if key.endswith("_ternary"):
+                    packed = pack_ternary_tq10(tensor)
+                    np.asarray(packed.cpu().numpy(), dtype=np.uint8).tofile(path)
+                    total_original += tensor.numel() * tensor.element_size()
+                    total_packed += packed.numel()
+                    ternary_tensors += 1
+                    index[key] = {
+                        "file": filename,
+                        "shape": list(tensor.shape),
+                        "dtype": "uint8",
+                        "format": "tq10",
+                        "original_bytes": tensor.numel() * tensor.element_size(),
+                        "packed_bytes": packed.numel(),
+                    }
+                elif key.endswith("_scale"):
+                    arr = np.asarray(tensor.cpu().numpy(), dtype=np.float16)
+                    arr.tofile(path)
+                    scale_tensors += 1
+                    index[key] = {
+                        "file": filename,
+                        "shape": list(tensor.shape),
+                        "dtype": "float16",
+                        "format": "raw",
+                        "packed_bytes": arr.nbytes,
+                    }
+
+    meta = {
+        "model_ref": model_ref,
+        "model_dir": str(model_dir),
+        "format": "tq10",
+        "ternary_tensors": ternary_tensors,
+        "scale_tensors": scale_tensors,
+        "original_mb": total_original / 1024**2,
+        "packed_mb": total_packed / 1024**2,
+        "compression_ratio": (total_original / total_packed) if total_packed else 0.0,
+    }
+    (packed_dir / "index.json").write_text(json.dumps(index, indent=2), encoding="utf-8")
+    (packed_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    return meta
 
 
 def _run_expert(x: torch.Tensor, w: _ExpertWeights) -> torch.Tensor:
@@ -442,6 +585,7 @@ class OutlierPagedModel(nn.Module):
         device: str = "mps",
         max_experts_in_memory: int = 4,
         max_warm_cache: int = 16,
+        packed_experts_dir: Optional[str] = None,
     ) -> None:
         super().__init__()
 
@@ -488,14 +632,19 @@ class OutlierPagedModel(nn.Module):
         self._cache_hits      = 0
         self._cache_misses    = 0
         self._cache_evictions = 0   # total device→CPU evictions
+        self._disk_loads      = 0
+        self._disk_load_s     = 0.0
 
         # Tensor-level shard index: raw_tensor_key → shard_path
         self._tensor_shard_index: Dict[str, str] = {}
+        self._packed_index: Dict[str, Dict[str, object]] = {}
+        self._packed_experts_dir = Path(packed_experts_dir).expanduser() if packed_experts_dir else None
 
         # Format detected during shard scan
         self._fmt: str = "toy"
 
         self._build_shard_index(model_dir)
+        self._load_packed_index()
         warnings.warn(
             "Quantizing shared expert weights to INT8 during paged model load.",
             stacklevel=2,
@@ -552,6 +701,22 @@ class OutlierPagedModel(nn.Module):
                         self._tensor_shard_index[key] = shard_str
 
         self._fmt = _detect_format(first_shard_keys)
+
+    def _load_packed_index(self) -> None:
+        if self._packed_experts_dir is None:
+            return
+        index_path = self._packed_experts_dir / "index.json"
+        if not index_path.exists():
+            return
+        try:
+            self._packed_index = json.loads(index_path.read_text(encoding="utf-8"))
+            warnings.warn(
+                f"Using TQ1_0 packed experts from {self._packed_experts_dir}.",
+                stacklevel=2,
+            )
+        except Exception as exc:
+            warnings.warn(f"Failed to load packed expert index: {exc}")
+            self._packed_index = {}
 
     # ------------------------------------------------------------------
     # Non-expert weight loading
@@ -673,8 +838,9 @@ class OutlierPagedModel(nn.Module):
         Return expert weights on device, paging through the two-tier cache.
 
         Device cache hit  → move to MRU, return.
-        Device cache miss → evict LRU to CPU (pack to 2-bit); load from CPU
-                            cache or disk; unpack to int8; move to device.
+        Device cache miss → evict LRU to CPU (pack to TQ1_0 on non-CPU);
+                            load from CPU cache or disk; unpack to int8;
+                            move to device.
         """
         key = (layer_idx, expert_idx)
         on_cpu = self.device.type == "cpu"
@@ -702,8 +868,11 @@ class OutlierPagedModel(nn.Module):
             weights_cached = self._cpu_cache[key]
         else:
             # Cold: load int8 from disk, optionally pack for non-CPU warm cache
+            start = time.perf_counter()
             weights_int8   = self._load_expert_from_disk(layer_idx, expert_idx)
-            weights_cached = weights_int8 if on_cpu else weights_int8.pack_2bit()
+            self._disk_loads += 1
+            self._disk_load_s += time.perf_counter() - start
+            weights_cached = weights_int8 if on_cpu else weights_int8.pack_tq10()
             self._add_to_warm_cache(key, weights_cached)
 
         # ── Move to device: unpack only when the warm cache stores packed bytes ────
@@ -718,6 +887,9 @@ class OutlierPagedModel(nn.Module):
         self, layer_idx: int, expert_idx: int
     ) -> _ExpertWeights:
         """Load one expert's tensors from shard(s), handling cross-shard splits."""
+        packed = self._load_expert_from_packed(layer_idx, expert_idx)
+        if packed is not None:
+            return packed
         from safetensors import safe_open
 
         if self._fmt == "real":
@@ -770,6 +942,33 @@ class OutlierPagedModel(nn.Module):
             tensors["gate_w"], tensors["gate_s"],
             tensors["up_w"],   tensors["up_s"],
             tensors["down_w"], tensors["down_s"],
+            packed=False,
+        )
+
+    def _load_expert_from_packed(
+        self, layer_idx: int, expert_idx: int
+    ) -> Optional[_ExpertWeights]:
+        if not self._packed_index:
+            return None
+        prefix = f"base.model.layers.{layer_idx}.mlp.experts.{expert_idx}"
+        projs = {}
+        for proj in ("gate", "up", "down"):
+            ternary_key = f"{prefix}.{proj}_ternary"
+            scale_key = f"{prefix}.{proj}_scale"
+            ternary_info = self._packed_index.get(ternary_key)
+            scale_info = self._packed_index.get(scale_key)
+            if ternary_info is None or scale_info is None:
+                return None
+            ternary_path = self._packed_experts_dir / str(ternary_info["file"])
+            scale_path = self._packed_experts_dir / str(scale_info["file"])
+            packed = torch.from_numpy(np.fromfile(ternary_path, dtype=np.uint8).copy())
+            scale = torch.from_numpy(np.fromfile(scale_path, dtype=np.float16).copy()).reshape(scale_info["shape"])
+            projs[proj] = (unpack_ternary_tq10(packed, tuple(ternary_info["shape"])), scale)
+
+        return _ExpertWeights(
+            projs["gate"][0], projs["gate"][1],
+            projs["up"][0],   projs["up"][1],
+            projs["down"][0], projs["down"][1],
             packed=False,
         )
 
@@ -893,6 +1092,8 @@ class OutlierPagedModel(nn.Module):
         self._cache_hits      = 0
         self._cache_misses    = 0
         self._cache_evictions = 0
+        self._disk_loads      = 0
+        self._disk_load_s     = 0.0
 
         tokens = input_ids
 
@@ -929,4 +1130,7 @@ class OutlierPagedModel(nn.Module):
             "lookups": total,
             "hit_rate": hit_rate,
             "evictions": self._cache_evictions,
+            "disk_loads": self._disk_loads,
+            "disk_load_s": self._disk_load_s,
+            "avg_disk_load_ms": (self._disk_load_s * 1000.0 / self._disk_loads) if self._disk_loads else 0.0,
         }

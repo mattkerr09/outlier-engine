@@ -6,3 +6,9 @@ tmp_smoke_model/
 first_run*.log
 france_demo*.log
 france_demo*.svg
+bench_outlier_10b.log
+demo.cast
+mps_*.log
+paged_*.log
+repack_*.log
+packed_experts/
