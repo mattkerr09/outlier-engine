@@ -1,0 +1,23 @@
+Fetching 34 files:   0%|          | 0/34 [00:00<?, ?it/s]Fetching 34 files: 100%|██████████| 34/34 [00:00<00:00, 45868.88it/s]
+You are using a model of type `outlier_moe` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+profiled_tokens=3
+device=mps
+hidden_dtype=torch.float16
+hidden_device=mps:0
+weight_dtype=torch.float16
+weight_device=mps:0
+layer_idx=27
+expert_idx=7
+lookup_ms_avg=0.021
+lookup_ms_samples=[0.021, 0.023, 0.019]
+gate_ms_avg=0.028
+gate_ms_samples=[0.029, 0.028, 0.028]
+up_ms_avg=0.022
+up_ms_samples=[0.021, 0.02, 0.024]
+activation_ms_avg=0.075
+activation_ms_samples=[0.071, 0.067, 0.086]
+down_ms_avg=0.038
+down_ms_samples=[0.036, 0.034, 0.045]
+combine_ms_avg=0.244
+combine_ms_samples=[0.568, 0.023, 0.142]
+warm_expert_total_ms_avg=0.429

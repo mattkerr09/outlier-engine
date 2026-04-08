@@ -1,0 +1,9 @@
+device=mps
+shape_x=(1, 4096)
+shape_w=(11008, 4096)
+iters=100
+standard_float_linear_ms=0.181
+ternary_mask_linear_ms=0.312
+packed_mask_linear_ms=18.707
+best=standard_float_linear
+best_ms=0.181
