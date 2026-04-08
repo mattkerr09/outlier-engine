@@ -1,0 +1,13 @@
+model=Outlier-Ai/Outlier-10B
+device=mps
+prompt='Hello'
+target_new_tokens=5
+loading paged model...
+Fetching 34 files:   0%|          | 0/34 [00:00<?, ?it/s]Fetching 34 files: 100%|██████████| 34/34 [00:00<00:00, 180743.14it/s]
+You are using a model of type `outlier_moe` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+backend=hf
+prompt_tokens=30
+load_time_s=12.27
+peak_rss_gb_after_load=1.78
+starting token benchmark...
+token_1: latency_s=104.41 text='0' hot_hits=0 warm_hits=0 cold_misses=224 lookups=224 hit_rate=0.0% prefetch_accuracy=0.0% avg_experts_per_token=3.58 hot_cache_entries=64 hot_cache_mb=24864.0 peak_rss_gb=9.06
