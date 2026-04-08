@@ -73,7 +73,12 @@ def main() -> int:
     print("loading paged model...", flush=True)
 
     load_t0 = time.perf_counter()
-    loaded = load_model(args.model, paged=True, device=args.device, prefetch=args.prefetch)
+    loaded = load_model(
+        args.model,
+        paged=True,
+        device=args.device,
+        prefetch=True if args.prefetch else None,
+    )
     _sync(args.device)
     load_s = time.perf_counter() - load_t0
 

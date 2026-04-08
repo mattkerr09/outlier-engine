@@ -226,7 +226,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             token=_resolve_token(args),
             device=args.device,
             paged=_resolve_paged_flag(args),
-            prefetch=args.prefetch,
+            prefetch=True if args.prefetch else None,
             max_experts_in_memory=args.max_experts,
             max_warm_cache=args.max_warm_cache,
         )
@@ -254,7 +254,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             token=_resolve_token(args),
             device=args.device,
             paged=_resolve_paged_flag(args),
-            prefetch=args.prefetch,
+            prefetch=True if args.prefetch else None,
         )
         load_time = time.perf_counter() - load_t0
         results = [
@@ -290,7 +290,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             token=_resolve_token(args),
             device=args.device,
             paged=_resolve_paged_flag(args),
-            prefetch=args.prefetch,
+            prefetch=True if args.prefetch else None,
             max_experts_in_memory=args.max_experts,
             max_warm_cache=args.max_warm_cache,
         )
