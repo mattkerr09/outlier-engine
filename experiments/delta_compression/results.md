@@ -1,53 +1,46 @@
 # Delta Compression Results
 
-## Summary
+## V1 Diagnosis
 
-Sampled `24` routed experts from layers `0, 8, 16` of `Outlier-Ai/Outlier-10B` from local snapshot `/Users/matthewkerr/.cache/huggingface/hub/models--Outlier-Ai--Outlier-10B/snapshots/11ff21cad8faa97dafab2362f20bf790da7f3ae3`.
-The experiment tested the hypothesis `expert ~= shared_ffn + ternary_delta`, where the delta was ternarized with scalar absmean quantization.
+Checkpoint diagnosis was run on `Outlier-Ai/Outlier-10B` layer `8`.
+The routed experts are duplicated in the checkpoint itself, not duplicated by the loader.
+The safetensors file contains distinct expert keys and distinct byte ranges, but the payloads are bitwise identical.
 
-- Runtime: `30.8s`
-- Average sparsity: `38.85%`
-- Average reconstruction error (L2): `87.1834`
-- Average cosine similarity: `0.911030`
-- Average compression ratio, full expert TQ1_0 / delta TQ1_0: `1.000x`
-- Experts above 80% sparsity: `0`
+## V2 Diverse Experts
 
-## Checkpoint Notes
+Created `8` synthetic routed experts for layer `8` by applying dropout upcycling (`r=0.5`) to the shared FFN and quantizing each expert with scalar absmean ternarization.
+- Average pairwise cosine similarity across synthesized experts: `0.499987`
+- Min / max pairwise cosine similarity: `0.499883` / `0.500056`
 
-Exact tensor comparison across gate/up/down ternary payloads and scales found:
-- layer 0: 1 unique routed expert payloads across 8 experts
-- layer 8: 1 unique routed expert payloads across 8 experts
-- layer 16: 1 unique routed expert payloads across 8 experts
+## V2 Compression Findings
+
+Reconstruction metrics below are measured in ternary-code space because the delta is defined on ternary shared/expert weights.
+- Average delta sparsity (`expert_ternary - shared_ternary == 0`): `58.10%`
+- Average differing positions vs shared ternary: `41.90%`
+- Average reconstruction L2: `5367.4073`
+- Average cosine similarity: `0.842443`
+- Average dense delta TQ1_0 ratio: `1.000x`
+- Average sparse ternary delta ratio (indices + packed delta values): `0.134x`
+- Average sparse raw delta ratio (indices + 2-bit delta values): `0.132x`
+- Average sparse transition-diff ratio (indices + 3-bit transition code): `0.127x`
+
+## Claim 10b
+
+No. Under this diverse-expert synthetic test, none of the measured delta encodings compressed better than the full TQ1_0 expert.
 
 ## Recommendation
 
-Not worth pursuing in its current storage format. Plain TQ1_0 delta packing does not beat full-expert TQ1_0, and the sparse RLE upside is too small to justify a patent non-provisional claim yet.
+This does not look worth pursuing as a broad patent non-provisional compression claim in its current form. The real bottleneck is position encoding: once experts are truly diverse, the sparse diff is too dense for index overhead to amortize.
 
-## Per-Expert Results
+## Per-Expert V2 Results
 
-| Layer | Expert | Sparsity | Recon L2 | Cosine | Full TQ1_0 MiB | Delta TQ1_0 MiB | Ratio | RLE TQ1_0 MiB | RLE Ratio |
+| Expert | Delta Sparsity | Recon L2 | Cosine | Full TQ1_0 MiB | Dense Delta Ratio | Sparse Ternary Ratio | Sparse Raw Ratio | Diff % | Transition Ratio |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 0 | 0 | 45.32% | 92.3690 | 0.877697 | 38.85 | 38.85 | 1.000x | n/a | n/a |
-| 0 | 1 | 45.32% | 92.3690 | 0.877697 | 38.85 | 38.85 | 1.000x | n/a | n/a |
-| 0 | 2 | 45.32% | 92.3690 | 0.877697 | 38.85 | 38.85 | 1.000x | n/a | n/a |
-| 0 | 3 | 45.32% | 92.3690 | 0.877697 | 38.85 | 38.85 | 1.000x | n/a | n/a |
-| 0 | 4 | 45.32% | 92.3690 | 0.877697 | 38.85 | 38.85 | 1.000x | n/a | n/a |
-| 0 | 5 | 45.32% | 92.3690 | 0.877697 | 38.85 | 38.85 | 1.000x | n/a | n/a |
-| 0 | 6 | 45.32% | 92.3690 | 0.877697 | 38.85 | 38.85 | 1.000x | n/a | n/a |
-| 0 | 7 | 45.32% | 92.3690 | 0.877697 | 38.85 | 38.85 | 1.000x | n/a | n/a |
-| 8 | 0 | 35.46% | 83.8699 | 0.929094 | 38.85 | 38.85 | 1.000x | n/a | n/a |
-| 8 | 1 | 35.46% | 83.8699 | 0.929094 | 38.85 | 38.85 | 1.000x | n/a | n/a |
-| 8 | 2 | 35.46% | 83.8699 | 0.929094 | 38.85 | 38.85 | 1.000x | n/a | n/a |
-| 8 | 3 | 35.46% | 83.8699 | 0.929094 | 38.85 | 38.85 | 1.000x | n/a | n/a |
-| 8 | 4 | 35.46% | 83.8699 | 0.929094 | 38.85 | 38.85 | 1.000x | n/a | n/a |
-| 8 | 5 | 35.46% | 83.8699 | 0.929094 | 38.85 | 38.85 | 1.000x | n/a | n/a |
-| 8 | 6 | 35.46% | 83.8699 | 0.929094 | 38.85 | 38.85 | 1.000x | n/a | n/a |
-| 8 | 7 | 35.46% | 83.8699 | 0.929094 | 38.85 | 38.85 | 1.000x | n/a | n/a |
-| 16 | 0 | 35.76% | 85.3113 | 0.926298 | 38.85 | 38.85 | 1.000x | n/a | n/a |
-| 16 | 1 | 35.76% | 85.3113 | 0.926298 | 38.85 | 38.85 | 1.000x | n/a | n/a |
-| 16 | 2 | 35.76% | 85.3113 | 0.926298 | 38.85 | 38.85 | 1.000x | n/a | n/a |
-| 16 | 3 | 35.76% | 85.3113 | 0.926298 | 38.85 | 38.85 | 1.000x | n/a | n/a |
-| 16 | 4 | 35.76% | 85.3113 | 0.926298 | 38.85 | 38.85 | 1.000x | n/a | n/a |
-| 16 | 5 | 35.76% | 85.3113 | 0.926298 | 38.85 | 38.85 | 1.000x | n/a | n/a |
-| 16 | 6 | 35.76% | 85.3113 | 0.926298 | 38.85 | 38.85 | 1.000x | n/a | n/a |
-| 16 | 7 | 35.76% | 85.3113 | 0.926298 | 38.85 | 38.85 | 1.000x | n/a | n/a |
+| 0 | 58.10% | 5367.3803 | 0.842444 | 38.85 | 1.000x | 0.134x | 0.132x | 41.90% | 0.127x |
+| 1 | 58.11% | 5367.7396 | 0.842425 | 38.85 | 1.000x | 0.134x | 0.132x | 41.89% | 0.127x |
+| 2 | 58.10% | 5367.4819 | 0.842444 | 38.85 | 1.000x | 0.134x | 0.132x | 41.90% | 0.127x |
+| 3 | 58.10% | 5367.3211 | 0.842446 | 38.85 | 1.000x | 0.134x | 0.132x | 41.90% | 0.127x |
+| 4 | 58.10% | 5367.4602 | 0.842452 | 38.85 | 1.000x | 0.134x | 0.132x | 41.90% | 0.127x |
+| 5 | 58.09% | 5367.1352 | 0.842439 | 38.85 | 1.000x | 0.133x | 0.132x | 41.91% | 0.127x |
+| 6 | 58.10% | 5367.4434 | 0.842452 | 38.85 | 1.000x | 0.134x | 0.132x | 41.90% | 0.127x |
+| 7 | 58.10% | 5367.2965 | 0.842440 | 38.85 | 1.000x | 0.134x | 0.132x | 41.90% | 0.127x |

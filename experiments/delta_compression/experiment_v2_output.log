@@ -1,0 +1,97 @@
+Create diverse experts
+model_ref=Outlier-Ai/Outlier-10B
+model_dir=/Users/matthewkerr/.cache/huggingface/hub/models--Outlier-Ai--Outlier-10B/snapshots/11ff21cad8faa97dafab2362f20bf790da7f3ae3
+layer_idx=8
+drop_rate=0.5
+n_experts=8
+checkpoint_n_experts=8
+
+Pairwise cosine similarities across all 8 synthesized experts
+expert_0 vs expert_1: cosine=0.499904
+expert_0 vs expert_2: cosine=0.500020
+expert_0 vs expert_3: cosine=0.500010
+expert_0 vs expert_4: cosine=0.500038
+expert_0 vs expert_5: cosine=0.499949
+expert_0 vs expert_6: cosine=0.500023
+expert_0 vs expert_7: cosine=0.500016
+expert_1 vs expert_2: cosine=0.499913
+expert_1 vs expert_3: cosine=0.499950
+expert_1 vs expert_4: cosine=0.499937
+expert_1 vs expert_5: cosine=0.499924
+expert_1 vs expert_6: cosine=0.499912
+expert_1 vs expert_7: cosine=0.499883
+expert_2 vs expert_3: cosine=0.500026
+expert_2 vs expert_4: cosine=0.500048
+expert_2 vs expert_5: cosine=0.499949
+expert_2 vs expert_6: cosine=0.500031
+expert_2 vs expert_7: cosine=0.499989
+expert_3 vs expert_4: cosine=0.500039
+expert_3 vs expert_5: cosine=0.499955
+expert_3 vs expert_6: cosine=0.500056
+expert_3 vs expert_7: cosine=0.500017
+expert_4 vs expert_5: cosine=0.500042
+expert_4 vs expert_6: cosine=0.500023
+expert_4 vs expert_7: cosine=0.500038
+expert_5 vs expert_6: cosine=0.499998
+expert_5 vs expert_7: cosine=0.499938
+expert_6 vs expert_7: cosine=0.500013
+
+average_pairwise_cosine=0.499987
+min_pairwise_cosine=0.499883 max_pairwise_cosine=0.500056
+saved_dir=/Users/matthewkerr/outlier-engine/experiments/delta_compression/diverse_experts/layer_8
+metadata_path=/Users/matthewkerr/outlier-engine/experiments/delta_compression/diverse_experts/layer_8/metadata.json
+
+Delta experiment v2
+diverse_experts_dir=/Users/matthewkerr/outlier-engine/experiments/delta_compression/diverse_experts/layer_8
+Recomputed pairwise cosine similarities
+expert_0 vs expert_1: cosine=0.499904
+expert_0 vs expert_2: cosine=0.500020
+expert_0 vs expert_3: cosine=0.500010
+expert_0 vs expert_4: cosine=0.500038
+expert_0 vs expert_5: cosine=0.499949
+expert_0 vs expert_6: cosine=0.500023
+expert_0 vs expert_7: cosine=0.500016
+expert_1 vs expert_2: cosine=0.499913
+expert_1 vs expert_3: cosine=0.499950
+expert_1 vs expert_4: cosine=0.499937
+expert_1 vs expert_5: cosine=0.499924
+expert_1 vs expert_6: cosine=0.499912
+expert_1 vs expert_7: cosine=0.499883
+expert_2 vs expert_3: cosine=0.500026
+expert_2 vs expert_4: cosine=0.500048
+expert_2 vs expert_5: cosine=0.499949
+expert_2 vs expert_6: cosine=0.500031
+expert_2 vs expert_7: cosine=0.499989
+expert_3 vs expert_4: cosine=0.500039
+expert_3 vs expert_5: cosine=0.499955
+expert_3 vs expert_6: cosine=0.500056
+expert_3 vs expert_7: cosine=0.500017
+expert_4 vs expert_5: cosine=0.500042
+expert_4 vs expert_6: cosine=0.500023
+expert_4 vs expert_7: cosine=0.500038
+expert_5 vs expert_6: cosine=0.499998
+expert_5 vs expert_7: cosine=0.499938
+expert_6 vs expert_7: cosine=0.500013
+
+Per-expert delta compression results
+expert_0: delta_sparsity=58.10% | recon_l2=5367.3803 | cos=0.842444 | full_tq10=38.85 MiB | dense_ratio=1.000x | sparse_ternary_ratio=0.134x | sparse_raw_ratio=0.132x | diff=41.90% | transition_ratio=0.127x
+expert_1: delta_sparsity=58.11% | recon_l2=5367.7396 | cos=0.842425 | full_tq10=38.85 MiB | dense_ratio=1.000x | sparse_ternary_ratio=0.134x | sparse_raw_ratio=0.132x | diff=41.89% | transition_ratio=0.127x
+expert_2: delta_sparsity=58.10% | recon_l2=5367.4819 | cos=0.842444 | full_tq10=38.85 MiB | dense_ratio=1.000x | sparse_ternary_ratio=0.134x | sparse_raw_ratio=0.132x | diff=41.90% | transition_ratio=0.127x
+expert_3: delta_sparsity=58.10% | recon_l2=5367.3211 | cos=0.842446 | full_tq10=38.85 MiB | dense_ratio=1.000x | sparse_ternary_ratio=0.134x | sparse_raw_ratio=0.132x | diff=41.90% | transition_ratio=0.127x
+expert_4: delta_sparsity=58.10% | recon_l2=5367.4602 | cos=0.842452 | full_tq10=38.85 MiB | dense_ratio=1.000x | sparse_ternary_ratio=0.134x | sparse_raw_ratio=0.132x | diff=41.90% | transition_ratio=0.127x
+expert_5: delta_sparsity=58.09% | recon_l2=5367.1352 | cos=0.842439 | full_tq10=38.85 MiB | dense_ratio=1.000x | sparse_ternary_ratio=0.133x | sparse_raw_ratio=0.132x | diff=41.91% | transition_ratio=0.127x
+expert_6: delta_sparsity=58.10% | recon_l2=5367.4434 | cos=0.842452 | full_tq10=38.85 MiB | dense_ratio=1.000x | sparse_ternary_ratio=0.134x | sparse_raw_ratio=0.132x | diff=41.90% | transition_ratio=0.127x
+expert_7: delta_sparsity=58.10% | recon_l2=5367.2965 | cos=0.842440 | full_tq10=38.85 MiB | dense_ratio=1.000x | sparse_ternary_ratio=0.134x | sparse_raw_ratio=0.132x | diff=41.90% | transition_ratio=0.127x
+
+Averages
+average_pairwise_cosine=0.499987
+average_delta_sparsity=58.10%
+average_diff_fraction=41.90%
+average_reconstruction_error=5367.407274
+average_cosine_similarity=0.842443
+average_dense_delta_ratio=1.000000x
+average_sparse_ternary_delta_ratio=0.133520x
+average_sparse_raw_delta_ratio=0.131678x
+average_sparse_transition_ratio=0.127289x
+aggregate_transition_counts={"+1->-1": 0, "+1->0": 278357344, "-1->+1": 0, "-1->0": 278525525, "0->+1": 62914628, "0->-1": 62949213}
+results_path=/Users/matthewkerr/outlier-engine/experiments/delta_compression/results.md

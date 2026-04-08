@@ -1,0 +1,151 @@
+{
+  "model_ref": "Outlier-Ai/Outlier-10B",
+  "layer_idx": 8,
+  "drop_rate": 0.5,
+  "n_experts": 8,
+  "average_pairwise_cosine": 0.49998723885089885,
+  "min_pairwise_cosine": 0.49988346510624504,
+  "max_pairwise_cosine": 0.5000558309242756,
+  "pairwise_rows": [
+    {
+      "expert_i": 0,
+      "expert_j": 1,
+      "cosine_similarity": 0.4999042457375073
+    },
+    {
+      "expert_i": 0,
+      "expert_j": 2,
+      "cosine_similarity": 0.5000197377727177
+    },
+    {
+      "expert_i": 0,
+      "expert_j": 3,
+      "cosine_similarity": 0.5000103053690153
+    },
+    {
+      "expert_i": 0,
+      "expert_j": 4,
+      "cosine_similarity": 0.5000380742765982
+    },
+    {
+      "expert_i": 0,
+      "expert_j": 5,
+      "cosine_similarity": 0.4999494613011958
+    },
+    {
+      "expert_i": 0,
+      "expert_j": 6,
+      "cosine_similarity": 0.5000234751277725
+    },
+    {
+      "expert_i": 0,
+      "expert_j": 7,
+      "cosine_similarity": 0.5000161822732175
+    },
+    {
+      "expert_i": 1,
+      "expert_j": 2,
+      "cosine_similarity": 0.4999128416010252
+    },
+    {
+      "expert_i": 1,
+      "expert_j": 3,
+      "cosine_similarity": 0.4999499999750142
+    },
+    {
+      "expert_i": 1,
+      "expert_j": 4,
+      "cosine_similarity": 0.4999369154932131
+    },
+    {
+      "expert_i": 1,
+      "expert_j": 5,
+      "cosine_similarity": 0.4999240798059419
+    },
+    {
+      "expert_i": 1,
+      "expert_j": 6,
+      "cosine_similarity": 0.4999116988045369
+    },
+    {
+      "expert_i": 1,
+      "expert_j": 7,
+      "cosine_similarity": 0.49988346510624504
+    },
+    {
+      "expert_i": 2,
+      "expert_j": 3,
+      "cosine_similarity": 0.5000263052394718
+    },
+    {
+      "expert_i": 2,
+      "expert_j": 4,
+      "cosine_similarity": 0.5000483789378051
+    },
+    {
+      "expert_i": 2,
+      "expert_j": 5,
+      "cosine_similarity": 0.4999490221814535
+    },
+    {
+      "expert_i": 2,
+      "expert_j": 6,
+      "cosine_similarity": 0.5000312255970225
+    },
+    {
+      "expert_i": 2,
+      "expert_j": 7,
+      "cosine_similarity": 0.49998853456803505
+    },
+    {
+      "expert_i": 3,
+      "expert_j": 4,
+      "cosine_similarity": 0.5000389470212346
+    },
+    {
+      "expert_i": 3,
+      "expert_j": 5,
+      "cosine_similarity": 0.49995516223683745
+    },
+    {
+      "expert_i": 3,
+      "expert_j": 6,
+      "cosine_similarity": 0.5000558309242756
+    },
+    {
+      "expert_i": 3,
+      "expert_j": 7,
+      "cosine_similarity": 0.500016914620268
+    },
+    {
+      "expert_i": 4,
+      "expert_j": 5,
+      "cosine_similarity": 0.5000422022351559
+    },
+    {
+      "expert_i": 4,
+      "expert_j": 6,
+      "cosine_similarity": 0.5000226827577814
+    },
+    {
+      "expert_i": 4,
+      "expert_j": 7,
+      "cosine_similarity": 0.5000376191600078
+    },
+    {
+      "expert_i": 5,
+      "expert_j": 6,
+      "cosine_similarity": 0.49999808630166087
+    },
+    {
+      "expert_i": 5,
+      "expert_j": 7,
+      "cosine_similarity": 0.4999380341794742
+    },
+    {
+      "expert_i": 6,
+      "expert_j": 7,
+      "cosine_similarity": 0.5000132592206881
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+Expert diagnosis
+model_ref=Outlier-Ai/Outlier-10B
+model_dir=/Users/matthewkerr/.cache/huggingface/hub/models--Outlier-Ai--Outlier-10B/snapshots/11ff21cad8faa97dafab2362f20bf790da7f3ae3
+layer_idx=8
+n_experts=8
+
+Pairwise comparison against expert 0
+expert_0 vs expert_1: bitwise_equal=True cosine=1.000000
+expert_0 vs expert_2: bitwise_equal=True cosine=1.000000
+expert_0 vs expert_3: bitwise_equal=True cosine=1.000000
+expert_0 vs expert_4: bitwise_equal=True cosine=1.000000
+expert_0 vs expert_5: bitwise_equal=True cosine=1.000000
+expert_0 vs expert_6: bitwise_equal=True cosine=1.000000
+expert_0 vs expert_7: bitwise_equal=True cosine=1.000000
+
+Checkpoint key / offset inspection for layer 8 gate_ternary
+base.model.layers.8.mlp.experts.0.gate_ternary | shard=model-00008-of-00030.safetensors | offsets=(1620393008, 1688288304) | shape=[18944, 3584]
+base.model.layers.8.mlp.experts.1.gate_ternary | shard=model-00008-of-00030.safetensors | offsets=(1824078896, 1891974192) | shape=[18944, 3584]
+base.model.layers.8.mlp.experts.2.gate_ternary | shard=model-00008-of-00030.safetensors | offsets=(1959869488, 2027764784) | shape=[18944, 3584]
+base.model.layers.8.mlp.experts.3.gate_ternary | shard=model-00009-of-00030.safetensors | offsets=(601963568, 669858864) | shape=[18944, 3584]
+base.model.layers.8.mlp.experts.4.gate_ternary | shard=model-00009-of-00030.safetensors | offsets=(805649456, 873544752) | shape=[18944, 3584]
+base.model.layers.8.mlp.experts.5.gate_ternary | shard=model-00009-of-00030.safetensors | offsets=(1009335344, 1077230640) | shape=[18944, 3584]
+base.model.layers.8.mlp.experts.6.gate_ternary | shard=model-00009-of-00030.safetensors | offsets=(1213021232, 1280916528) | shape=[18944, 3584]
+base.model.layers.8.mlp.experts.7.gate_ternary | shard=model-00009-of-00030.safetensors | offsets=(1416707120, 1484602416) | shape=[18944, 3584]
+
+All pairwise equality summary across all 8 experts
+payload_group=[0, 1, 2, 3, 4, 5, 6, 7]
+
+Diagnosis
+The current loader does not synthesize or fan out one expert into eight. Its paged load path constructs expert-specific keys like `base.model.layers.{layer}.mlp.experts.{expert_idx}.*` and reads those raw tensors directly from safetensors.
+Each expert key points to a distinct safetensors byte range, so the file stores separate tensor entries rather than one aliased tensor.
+Experts are identical because the checkpoint itself contains duplicated routed expert payloads for this layer: distinct expert keys and distinct byte ranges, but equal tensor contents and equal scales.
