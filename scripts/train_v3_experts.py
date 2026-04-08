@@ -152,6 +152,9 @@ class DistillationCorpus:
 
 
 def checkpoint_snapshot(model_ref: str) -> Path:
+    local_path = Path(model_ref).expanduser()
+    if local_path.exists():
+        return local_path.resolve()
     return Path(
         snapshot_download(
             repo_id=model_ref,
