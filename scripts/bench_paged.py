@@ -142,11 +142,13 @@ def main() -> int:
 
             stats = loaded.model.cache_stats() if hasattr(loaded.model, "cache_stats") else None
             cache_snapshots.append(dict(stats) if stats else {})
+            hot_cache_entries = stats.get("hot_cache_entries", 0) if stats else 0
+            hot_cache_mb = stats.get("hot_cache_mb", 0.0) if stats else 0.0
             print(
                 f"token_{idx + 1}: latency_s={elapsed:.2f} "
                 f"text={token_text!r} {_format_cache(stats)} "
-                f"hot_cache_entries={stats.get('hot_cache_entries', 0) if stats else 0} "
-                f"hot_cache_mb={stats.get('hot_cache_mb', 0.0):.1f} "
+                f"hot_cache_entries={hot_cache_entries} "
+                f"hot_cache_mb={hot_cache_mb:.1f} "
                 f"peak_rss_gb={_peak_rss_gb():.2f}",
                 flush=True,
             )

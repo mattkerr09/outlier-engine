@@ -1,0 +1,30 @@
+Diagnose paged generation
+model=Outlier-Ai/Outlier-10B
+device=cpu
+prompt='Hello'
+
+Resolved models
+nonpaged: model_ref=Outlier-Ai/Outlier-10B-V2 model_dir=/Users/matthewkerr/.cache/huggingface/hub/models--Outlier-Ai--Outlier-10B-V2/snapshots/049129ecac480ad5785c33701a0619b5a7538457 backend=hf paged=False model_type=qwen2 n_experts=0
+paged: model_ref=Outlier-Ai/Outlier-10B-V2 model_dir=/Users/matthewkerr/.cache/huggingface/hub/models--Outlier-Ai--Outlier-10B-V2/snapshots/049129ecac480ad5785c33701a0619b5a7538457 backend=hf paged=False model_type=qwen2 n_experts=0
+same_model_dir=True same_model_ref=True
+
+Task 1: one forward pass
+hidden_before_first_layer: shape=(1, 1, 3584) cosine=1.000001 max_abs_diff=0.000000e+00
+hidden_after_first_layer: shape=(1, 1, 3584) cosine=1.000002 max_abs_diff=0.000000e+00
+moe_input: unavailable
+shared_out/expert_out/combined_out: unavailable (one or both resolved models do not expose a comparable MoE block)
+final_logits: shape=(1, 152064) cosine=0.999986 max_abs_diff=0.000000e+00
+nonpaged_top5=[{"token_id": 4780, "text": " friends", "logit": 9.8125}, {"token_id": 5019, "text": " everyone", "logit": 8.8125}, {"token_id": 22508, "text": " Friends", "logit": 8.3125}, {"token_id": 358, "text": " I", "logit": 8.125}, {"token_id": 323, "text": " and", "logit": 8.0625}]
+paged_top5=[{"token_id": 4780, "text": " friends", "logit": 9.8125}, {"token_id": 5019, "text": " everyone", "logit": 8.8125}, {"token_id": 22508, "text": " Friends", "logit": 8.3125}, {"token_id": 358, "text": " I", "logit": 8.125}, {"token_id": 323, "text": " and", "logit": 8.0625}]
+
+Task 2: shared-only paged probe
+shared_only_probe: skipped (resolved paged model has no MoE experts to disable)
+
+Task 3: teacher forcing probe
+teacher_token_id=4780 teacher_token_text=' friends'
+nonpaged_teacher_forcing={"position_0_top5": [{"token_id": 4780, "text": " friends", "logit": 9.8125}, {"token_id": 5019, "text": " everyone", "logit": 8.8125}, {"token_id": 22508, "text": " Friends", "logit": 8.3125}, {"token_id": 358, "text": " I", "logit": 8.125}, {"token_id": 323, "text": " and", "logit": 8.0625}], "position_1_top5": [{"token_id": 4780, "text": " friends", "logit": 9.9375}, {"token_id": 5019, "text": " everyone", "logit": 9.0}, {"token_id": 22508, "text": " Friends", "logit": 8.5}, {"token_id": 678, "text": " all", "logit": 8.0625}, {"token_id": 358, "text": " I", "logit": 8.0625}]}
+paged_teacher_forcing={"position_0_top5": [{"token_id": 4780, "text": " friends", "logit": 9.8125}, {"token_id": 5019, "text": " everyone", "logit": 8.8125}, {"token_id": 22508, "text": " Friends", "logit": 8.3125}, {"token_id": 358, "text": " I", "logit": 8.125}, {"token_id": 323, "text": " and", "logit": 8.0625}], "position_1_top5": [{"token_id": 4780, "text": " friends", "logit": 9.9375}, {"token_id": 5019, "text": " everyone", "logit": 9.0}, {"token_id": 22508, "text": " Friends", "logit": 8.5}, {"token_id": 678, "text": " all", "logit": 8.0625}, {"token_id": 358, "text": " I", "logit": 8.0625}]}
+
+Diagnosis summary
+Paged request fell back to the canonical dense model, so there is no expert-combination bug on the active public path.
+log_path=/Users/matthewkerr/outlier-engine/diagnose_generation.log

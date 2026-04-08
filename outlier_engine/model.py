@@ -39,6 +39,52 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def _normalize_config_dict(raw: dict) -> dict:
+    cfg = dict(raw)
+    field_map = {
+        "hidden_size": "hidden_dim",
+        "intermediate_size": "intermediate_dim",
+        "max_position_embeddings": "max_seq_len",
+        "num_attention_heads": "n_heads",
+        "num_hidden_layers": "n_layers",
+    }
+    for source, target in field_map.items():
+        if source in cfg and target not in cfg:
+            cfg[target] = cfg[source]
+    if "outlier_num_experts" in cfg and "n_experts" not in cfg:
+        cfg["n_experts"] = cfg["outlier_num_experts"]
+    if "outlier_num_experts_per_tok" in cfg and "top_k" not in cfg:
+        cfg["top_k"] = cfg["outlier_num_experts_per_tok"]
+    if "n_experts" in cfg and "outlier_num_experts" not in cfg:
+        cfg["outlier_num_experts"] = cfg["n_experts"]
+    if "top_k" in cfg and "outlier_num_experts_per_tok" not in cfg:
+        cfg["outlier_num_experts_per_tok"] = cfg["top_k"]
+    return cfg
+
+
+def _remap_real_key(key: str) -> str:
+    if key.startswith("base.model."):
+        key = key[len("base.model."):]
+    elif key.startswith("base."):
+        key = key[len("base."):]
+
+    key = key.replace(".self_attn.", ".attn.")
+    key = key.replace(".input_layernorm.", ".attn_norm.")
+    key = key.replace(".post_attention_layernorm.", ".ffn_norm.")
+    key = key.replace(".mlp.router.weight", ".ffn.router_weight")
+    key = key.replace(".mlp.shared_expert.gate_W", ".ffn.shared.gate_proj.weight")
+    key = key.replace(".mlp.shared_expert.up_W", ".ffn.shared.up_proj.weight")
+    key = key.replace(".mlp.shared_expert.down_W", ".ffn.shared.down_proj.weight")
+    key = key.replace(".mlp.experts.", ".ffn.experts.")
+    key = key.replace(".gate_ternary", ".gate_proj.weight")
+    key = key.replace(".gate_scale", ".gate_proj.scale")
+    key = key.replace(".up_ternary", ".up_proj.weight")
+    key = key.replace(".up_scale", ".up_proj.scale")
+    key = key.replace(".down_ternary", ".down_proj.weight")
+    key = key.replace(".down_scale", ".down_proj.scale")
+    return key
+
+
 # ---------------------------------------------------------------------------
 # Utility layers
 # ---------------------------------------------------------------------------
@@ -411,7 +457,7 @@ class OutlierForCausalLM(nn.Module):
 
         # Read config
         with open(model_dir / "config.json") as f:
-            config_dict = json.load(f)
+            config_dict = _normalize_config_dict(json.load(f))
 
         model = cls(config_dict)
 
@@ -425,6 +471,9 @@ class OutlierForCausalLM(nn.Module):
         state: Dict[str, torch.Tensor] = {}
         for shard in shard_files:
             state.update(load_file(str(shard), device="cpu"))
+
+        if any(k.startswith("base.model.") or k.startswith("base.") for k in state):
+            state = {_remap_real_key(k): v for k, v in state.items()}
 
         model._load_weights(state)
         model.eval()

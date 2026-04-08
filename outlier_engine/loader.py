@@ -175,13 +175,21 @@ def load_model(
     max_warm_cache: int = 256,
     packed_experts_dir: Optional[str] = None,
 ) -> LoadedOutlier:
-    use_alias = paged is not True
+    use_alias = not _is_local_path(model_ref)
     resolved_ref = _canonical_model_ref(model_ref) if use_alias else model_ref
     model_dir = _resolve_model_dir(model_ref, token=token, canonicalize=use_alias)
     config = _normalize_config(_read_config(model_dir))
     n_experts = int(config.get("n_experts", 0))
+    moe_capable = config.get("model_type") == "outlier_moe" and n_experts > 0
     if paged is None:
-        paged = config.get("model_type") == "outlier_moe" and n_experts > 0
+        paged = moe_capable
+    elif paged and not moe_capable:
+        warnings.warn(
+            f"Paged inference requested for {resolved_ref}, but the resolved model is not an MoE checkpoint. "
+            "Falling back to standard generation so paged and non-paged modes use the same canonical model.",
+            stacklevel=2,
+        )
+        paged = False
 
     tokenizer = load_tokenizer(str(model_dir), token=token)
     last_error: Optional[Exception] = None
