@@ -7,8 +7,19 @@ import sys
 import time
 from typing import Optional
 
+import torch
+
 from .generate import benchmark_generation, stream_generate
 from .loader import inspect_model, load_model
+
+BENCH_PROMPTS = [
+    ("short", "Hello"),
+    ("medium", "Explain quantum computing in simple terms"),
+    (
+        "long",
+        "Write a detailed analysis of the economic impacts of artificial intelligence on the labor market over the next decade",
+    ),
+]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -35,8 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     bench_parser = subparsers.add_parser("bench", help="Run a quick throughput benchmark.")
     bench_parser.add_argument("model")
-    bench_parser.add_argument("--prompt", default="Hello, world")
-    bench_parser.add_argument("--max-tokens", type=int, default=16, dest="max_tokens")
+    bench_parser.add_argument("--max-tokens", type=int, default=20, dest="max_tokens")
     bench_parser.add_argument("--device", default=None)
     bench_parser.add_argument("--hf-token", default=None, dest="hf_token")
     bench_parser.add_argument("--paged", action="store_true")
@@ -55,6 +65,17 @@ def _resolve_paged_flag(args) -> Optional[bool]:
 
 def _resolve_token(args) -> Optional[str]:
     return args.hf_token or os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+
+
+def _peak_memory_gb(device: Optional[str]) -> Optional[float]:
+    if device == "cuda" and torch.cuda.is_available():
+        return torch.cuda.max_memory_allocated() / 1e9
+    if device == "mps" and getattr(torch, "mps", None) is not None and torch.backends.mps.is_available():
+        try:
+            return torch.mps.current_allocated_memory() / 1e9
+        except Exception:
+            return None
+    return None
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -115,18 +136,39 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     if args.command == "bench":
+        load_t0 = time.perf_counter()
         loaded = load_model(
             args.model,
             token=_resolve_token(args),
             device=args.device,
             paged=_resolve_paged_flag(args),
         )
-        metrics = benchmark_generation(
-            loaded,
-            args.prompt,
-            max_tokens=args.max_tokens,
-        )
-        print(json.dumps(metrics, indent=2))
+        load_time = time.perf_counter() - load_t0
+        results = [
+            benchmark_generation(
+                loaded,
+                prompt,
+                max_tokens=args.max_tokens,
+            )
+            for _, prompt in BENCH_PROMPTS
+        ]
+        avg_tok_s = sum(result["tokens_per_s"] for result in results) / max(len(results), 1)
+        peak_memory = _peak_memory_gb(getattr(loaded, "device", args.device))
+
+        print("outlier-engine bench v0.2")
+        print(f"Model: {args.model}")
+        print(f"Device: {loaded.device}")
+        for idx, ((label, _), result) in enumerate(zip(BENCH_PROMPTS, results), start=1):
+            print(
+                f"Prompt {idx} ({label}): {result['tokens']:>3} tokens in "
+                f"{result['elapsed_s']:.1f}s ({result['tokens_per_s']:.1f} tok/s)"
+            )
+        print(f"Average: {avg_tok_s:.1f} tok/s")
+        print(f"Load time: {load_time:.1f}s")
+        if peak_memory is None:
+            print("Peak memory: n/a")
+        else:
+            print(f"Peak memory: {peak_memory:.1f} GB")
         return 0
 
     parser.error(f"unknown command: {args.command}")

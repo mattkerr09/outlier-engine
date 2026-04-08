@@ -9,3 +9,13 @@ def test_cli_parses_run_command():
     assert args.model == "Outlier-Ai/Outlier-10B"
     assert args.prompt == "Hello"
     assert args.max_tokens == 10
+
+
+def test_bench_command_parses_args():
+    parser = build_parser()
+    args = parser.parse_args(["bench", "Outlier-Ai/Outlier-10B", "--device", "mps"])
+
+    assert args.command == "bench"
+    assert args.model == "Outlier-Ai/Outlier-10B"
+    assert args.device == "mps"
+    assert args.max_tokens == 20

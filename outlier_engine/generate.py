@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 import threading
 import time
-from typing import Generator, Iterable, Optional
+from typing import Generator, Optional
 
 import torch
 import torch.nn.functional as F
@@ -223,6 +223,42 @@ def generate_text(
     return "".join(chunks)
 
 
+def timed_generation(
+    loaded: LoadedOutlier,
+    prompt: str,
+    *,
+    max_tokens: int = 100,
+    temperature: float = 0.7,
+    top_p: float = 1.0,
+) -> dict:
+    t0 = time.perf_counter()
+    generator = stream_generate(
+        loaded,
+        prompt,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        file=None,
+    )
+    chunks: list[str] = []
+    token_count = 0
+    while True:
+        try:
+            chunks.append(next(generator))
+        except StopIteration as stop:
+            result = stop.value or {}
+            token_count = int(result.get("tokens", token_count))
+            break
+    elapsed = time.perf_counter() - t0
+    return {
+        "prompt": prompt,
+        "generated_text": "".join(chunks),
+        "tokens": token_count,
+        "elapsed_s": elapsed,
+        "tokens_per_s": token_count / max(elapsed, 1e-6),
+    }
+
+
 def benchmark_generation(
     loaded: LoadedOutlier,
     prompt: str,
@@ -231,18 +267,11 @@ def benchmark_generation(
     temperature: float = 0.0,
     top_p: float = 1.0,
 ) -> dict:
-    t0 = time.perf_counter()
-    text = generate_text(
+    metrics = timed_generation(
         loaded,
         prompt,
         max_tokens=max_tokens,
         temperature=temperature,
         top_p=top_p,
     )
-    elapsed = time.perf_counter() - t0
-    return {
-        "prompt": prompt,
-        "generated_text": text,
-        "elapsed_s": elapsed,
-        "tokens_per_s": max_tokens / max(elapsed, 1e-6),
-    }
+    return metrics
