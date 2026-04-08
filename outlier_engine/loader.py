@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -15,6 +16,10 @@ from .tokenizer import OutlierTokenizer, load_tokenizer
 
 
 def _auto_device() -> str:
+    # The PyTorch MPS fallback path is currently much slower and harder to
+    # debug than the CPU path for this runtime, so prefer CPU on macOS.
+    if platform.system() == "Darwin":
+        return "cpu"
     if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
         return "mps"
     if torch.cuda.is_available():

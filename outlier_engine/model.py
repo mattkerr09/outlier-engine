@@ -43,6 +43,19 @@ import torch.nn.functional as F
 # Utility layers
 # ---------------------------------------------------------------------------
 
+class _NoInitLinear(nn.Linear):
+    """Checkpoint-backed linear layer that skips expensive default init."""
+
+    def reset_parameters(self) -> None:
+        pass
+
+
+class _NoInitEmbedding(nn.Embedding):
+    """Checkpoint-backed embedding that skips expensive default init."""
+
+    def reset_parameters(self) -> None:
+        pass
+
 class _RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-5) -> None:
         super().__init__()
@@ -99,10 +112,10 @@ class _Attention(nn.Module):
         self.n_heads = n_heads
         self.head_dim = hidden_dim // n_heads
         self.scale = self.head_dim ** -0.5
-        self.q_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
-        self.k_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
-        self.v_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
-        self.o_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
+        self.q_proj = _NoInitLinear(hidden_dim, hidden_dim, bias=False)
+        self.k_proj = _NoInitLinear(hidden_dim, hidden_dim, bias=False)
+        self.v_proj = _NoInitLinear(hidden_dim, hidden_dim, bias=False)
+        self.o_proj = _NoInitLinear(hidden_dim, hidden_dim, bias=False)
         self.rope = _RotaryEmbedding(self.head_dim, base=rope_theta, max_seq_len=max_seq_len)
 
     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -164,9 +177,9 @@ class _SwiGLU(nn.Module):
 
     def __init__(self, hidden_dim: int, intermediate_dim: int) -> None:
         super().__init__()
-        self.gate_proj = nn.Linear(hidden_dim, intermediate_dim, bias=False)
-        self.up_proj   = nn.Linear(hidden_dim, intermediate_dim, bias=False)
-        self.down_proj = nn.Linear(intermediate_dim, hidden_dim, bias=False)
+        self.gate_proj = _NoInitLinear(hidden_dim, intermediate_dim, bias=False)
+        self.up_proj   = _NoInitLinear(hidden_dim, intermediate_dim, bias=False)
+        self.down_proj = _NoInitLinear(intermediate_dim, hidden_dim, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
@@ -334,7 +347,7 @@ class OutlierForCausalLM(nn.Module):
 
         D, I, V = self.hidden_dim, self.intermediate_dim, self.vocab_size
 
-        self.embed_tokens = nn.Embedding(V, D)
+        self.embed_tokens = _NoInitEmbedding(V, D)
         self.layers = nn.ModuleList([
             _TransformerBlock(
                 D, I, self.n_heads, self.rope_theta, self.max_seq_len,
@@ -343,7 +356,7 @@ class OutlierForCausalLM(nn.Module):
             for _ in range(self.n_layers)
         ])
         self.norm    = _RMSNorm(D)
-        self.lm_head = nn.Linear(D, V, bias=False)
+        self.lm_head = _NoInitLinear(D, V, bias=False)
 
     # ------------------------------------------------------------------
     # Loading

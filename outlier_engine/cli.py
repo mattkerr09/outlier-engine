@@ -25,6 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--full", action="store_true")
     run_parser.add_argument("--max-experts", type=int, default=4, dest="max_experts")
     run_parser.add_argument("--max-warm-cache", type=int, default=16, dest="max_warm_cache")
+    run_parser.add_argument("--verbose", action="store_true", help="Print token IDs and repr() chunks while generating.")
 
     info_parser = subparsers.add_parser("info", help="Print model architecture and artifact info.")
     info_parser.add_argument("model")
@@ -92,6 +93,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             max_tokens=args.max_tokens,
             temperature=args.temperature,
             top_p=args.top_p,
+            verbose=args.verbose,
         ):
             pass
         print()

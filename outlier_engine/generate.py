@@ -44,6 +44,8 @@ def stream_generate(
     temperature: float = 0.7,
     top_p: float = 1.0,
     file=None,
+    verbose: bool = False,
+    verbose_file=None,
 ) -> Generator[str, None, torch.Tensor]:
     tokenizer = loaded.tokenizer
     prompt_ids = tokenizer.encode(prompt)
@@ -51,6 +53,7 @@ def stream_generate(
         raise ValueError("Prompt encoded to an empty token list.")
 
     output_file = file
+    debug_file = verbose_file if verbose_file is not None else sys.stderr
     input_ids = torch.tensor([prompt_ids], dtype=torch.long, device=loaded.model.device if hasattr(loaded.model, "device") else loaded.device)
     tokens = input_ids
     generated_ids: list[int] = []
@@ -66,11 +69,19 @@ def stream_generate(
                 top_p=top_p,
             )
             tokens = torch.cat([tokens, next_token], dim=1)
-            generated_ids.append(int(next_token[0, 0].item()))
+            token_id = int(next_token[0, 0].item())
+            generated_ids.append(token_id)
 
             current_text = tokenizer.decode(generated_ids)
             delta = current_text[len(previous_text):] if current_text.startswith(previous_text) else current_text
             previous_text = current_text
+
+            if verbose:
+                print(
+                    f"[token_id={token_id} delta={delta!r} text={current_text!r}]",
+                    file=debug_file,
+                    flush=True,
+                )
 
             if delta and output_file is not None:
                 output_file.write(delta)

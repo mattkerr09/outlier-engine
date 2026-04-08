@@ -59,7 +59,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .model import _RMSNorm, _Attention, _SwiGLU, _TernarySwiGLU, _causal_mask
+from .model import (
+    _RMSNorm,
+    _Attention,
+    _SwiGLU,
+    _TernarySwiGLU,
+    _causal_mask,
+    _NoInitEmbedding,
+    _NoInitLinear,
+)
 try:
     from .model import _RotaryEmbedding
 except ImportError:
@@ -95,10 +103,10 @@ class _GQAAttention(nn.Module):
         self.scale      = self.head_dim ** -0.5
 
         kv_dim = n_kv_heads * self.head_dim
-        self.q_proj = nn.Linear(hidden_dim, hidden_dim, bias=True)
-        self.k_proj = nn.Linear(hidden_dim, kv_dim,     bias=True)
-        self.v_proj = nn.Linear(hidden_dim, kv_dim,     bias=True)
-        self.o_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
+        self.q_proj = _NoInitLinear(hidden_dim, hidden_dim, bias=True)
+        self.k_proj = _NoInitLinear(hidden_dim, kv_dim,     bias=True)
+        self.v_proj = _NoInitLinear(hidden_dim, kv_dim,     bias=True)
+        self.o_proj = _NoInitLinear(hidden_dim, hidden_dim, bias=False)
 
         from .model import _RotaryEmbedding
         self.rope = _RotaryEmbedding(
@@ -455,7 +463,7 @@ class OutlierPagedModel(nn.Module):
 
         D, I, V = self.hidden_dim, self.intermediate_dim, self.vocab_size
 
-        self.embed_tokens = nn.Embedding(V, D)
+        self.embed_tokens = _NoInitEmbedding(V, D)
         self.layers = nn.ModuleList([
             _PagedLayer(
                 D, I, self.n_heads, self.n_kv_heads,
@@ -465,7 +473,7 @@ class OutlierPagedModel(nn.Module):
             for _ in range(self.n_layers)
         ])
         self.norm    = _RMSNorm(D)
-        self.lm_head = nn.Linear(D, V, bias=False)
+        self.lm_head = _NoInitLinear(D, V, bias=False)
 
         # Two-tier expert cache (both bounded with LRU eviction)
         self._lru_cache: OrderedDict[Tuple[int, int], _ExpertWeights] = OrderedDict()
@@ -644,6 +652,7 @@ class OutlierPagedModel(nn.Module):
                             cache or disk; unpack to int8; move to device.
         """
         key = (layer_idx, expert_idx)
+        on_cpu = self.device.type == "cpu"
 
         # ── Device cache hit ──────────────────────────────────────────
         if key in self._lru_cache:
@@ -657,21 +666,26 @@ class OutlierPagedModel(nn.Module):
         if len(self._lru_cache) >= self.max_experts_in_memory:
             evicted_key, evicted_w = self._lru_cache.popitem(last=False)
             self._cache_evictions += 1
-            # Pack to 2-bit before CPU caching (4x RAM saving)
-            self._add_to_warm_cache(evicted_key, evicted_w.cpu().pack_2bit())
+            # On CPU there is no device/host boundary, so avoid wasteful
+            # pack/unpack churn and keep the expert in native int8 form.
+            cached_w = evicted_w.cpu() if on_cpu else evicted_w.cpu().pack_2bit()
+            self._add_to_warm_cache(evicted_key, cached_w)
 
         # ── Load from warm cache or cold disk ─────────────────────────
         if key in self._cpu_cache:
             self._cpu_cache.move_to_end(key)
-            weights_packed = self._cpu_cache[key]
+            weights_cached = self._cpu_cache[key]
         else:
-            # Cold: load int8 from disk, pack, add to warm cache
+            # Cold: load int8 from disk, optionally pack for non-CPU warm cache
             weights_int8   = self._load_expert_from_disk(layer_idx, expert_idx)
-            weights_packed = weights_int8.pack_2bit()
-            self._add_to_warm_cache(key, weights_packed)
+            weights_cached = weights_int8 if on_cpu else weights_int8.pack_2bit()
+            self._add_to_warm_cache(key, weights_cached)
 
-        # ── Move to device: unpack to int8 for fast ternary matmul ────
-        weights_dev = weights_packed.unpack_to_int8().to(self.device)
+        # ── Move to device: unpack only when the warm cache stores packed bytes ────
+        if on_cpu:
+            weights_dev = weights_cached
+        else:
+            weights_dev = weights_cached.unpack_to_int8().to(self.device)
         self._lru_cache[key] = weights_dev
         return weights_dev
 
