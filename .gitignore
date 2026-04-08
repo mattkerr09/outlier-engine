@@ -3,3 +3,6 @@
 __pycache__/
 *.egg-info/
 tmp_smoke_model/
+first_run*.log
+france_demo*.log
+france_demo*.svg

@@ -1,21 +1,18 @@
-# Outlier Engine
+# outlier-engine
 
-Run ternary MoE language models on consumer hardware.
+Inference engine for [Outlier](https://outlier.host) ternary-quantized Mixture-of-Experts language models.
+
+## What is Outlier?
+
+Outlier builds ternary MoE language models that run on consumer hardware. A 36B-parameter model fits in ~10 GB RAM and scores 81.60% MMLU — exceeding its dense teacher.
+
+| Model | Params | RAM | MMLU | Status |
+|-------|--------|-----|------|--------|
+| Outlier-10B V2 | 10.6B | ~5 GB | 75.96% (99.1% teacher retention) | Published |
+| Outlier-40B | 36B | ~10 GB | 81.60% (exceeds teacher) | Published |
 
 ## Install
 
 ```bash
 pip install outlier-engine
 ```
-
-## Quick Start
-
-```bash
-outlier-engine run Outlier-Ai/Outlier-10B "Explain quantum computing"
-```
-
-## What is this?
-
-`outlier-engine` is the public inference wrapper around the existing Outlier runtime. It downloads a model from Hugging Face or uses a local path, loads the shared expert plus router weights, pages ternary experts on demand for MoE checkpoints, and streams generated text token by token.
-
-See the Outlier Hugging Face org and paper assets for model releases and architecture details.
