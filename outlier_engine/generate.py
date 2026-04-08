@@ -157,7 +157,10 @@ def stream_generate(
         thread.join()
         if "exception" in error:
             raise RuntimeError("HF generation failed") from error["exception"]
-        return {"tokens": generated_tokens}
+        result = {"tokens": generated_tokens}
+        if hasattr(loaded.model, "cache_stats"):
+            result["cache_stats"] = loaded.model.cache_stats()
+        return result
 
     tokens = input_ids
     generated_ids: list[int] = []
@@ -199,7 +202,10 @@ def stream_generate(
             if tokens.shape[1] >= loaded.config.get("max_seq_len", 4096):
                 break
 
-    return {"tokens": len(generated_ids), "token_ids": generated_ids}
+    result = {"tokens": len(generated_ids), "token_ids": generated_ids}
+    if hasattr(loaded.model, "cache_stats"):
+        result["cache_stats"] = loaded.model.cache_stats()
+    return result
 
 
 def generate_text(

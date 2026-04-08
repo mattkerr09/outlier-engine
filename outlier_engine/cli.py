@@ -122,17 +122,26 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         t0 = time.perf_counter()
         token_count = 0
+        cache_stats = None
         while True:
             try:
                 next(generator)
             except StopIteration as stop:
                 result = stop.value or {}
                 token_count = int(result.get("tokens", token_count))
+                cache_stats = result.get("cache_stats")
                 break
         print()
         elapsed = time.perf_counter() - t0
         tok_s = token_count / max(elapsed, 1e-6)
         print(f"Generated {token_count} tokens in {elapsed:.1f}s ({tok_s:.1f} tok/s)")
+        if cache_stats:
+            print(
+                "Expert cache: "
+                f"{cache_stats['hits']} hits / {cache_stats['lookups']} lookups "
+                f"({cache_stats['hit_rate']:.1%} hit rate), "
+                f"{cache_stats['evictions']} evictions"
+            )
         return 0
 
     if args.command == "bench":

@@ -156,11 +156,11 @@ class _Int8SwiGLU(nn.Module):
         super().__init__()
         I, D = intermediate_dim, hidden_dim
         self.register_buffer("gate_w", torch.zeros(I, D, dtype=torch.int8))
-        self.register_buffer("gate_s", torch.ones(1,    dtype=torch.float16))
+        self.register_buffer("gate_s", torch.ones(I, 1, dtype=torch.float16))
         self.register_buffer("up_w",   torch.zeros(I, D, dtype=torch.int8))
-        self.register_buffer("up_s",   torch.ones(1,    dtype=torch.float16))
+        self.register_buffer("up_s",   torch.ones(I, 1, dtype=torch.float16))
         self.register_buffer("down_w", torch.zeros(D, I, dtype=torch.int8))
-        self.register_buffer("down_s", torch.ones(1,    dtype=torch.float16))
+        self.register_buffer("down_s", torch.ones(D, 1, dtype=torch.float16))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         from .quantize_utils import dequant_int8_matmul
@@ -298,7 +298,7 @@ class _PagedMoEFFN(nn.Module):
         self.router_weight = nn.Parameter(
             torch.empty(n_experts, hidden_dim), requires_grad=False
         )
-        self.shared = _SwiGLU(hidden_dim, intermediate_dim)
+        self.shared = _Int8SwiGLU(hidden_dim, intermediate_dim)
 
 
 class _PagedLayer(nn.Module):
@@ -376,6 +376,23 @@ def _detect_format(sample_keys) -> str:
     return "toy"
 
 
+def _remap_real_key(key: str) -> str:
+    """Translate one real-format key to the internal model naming."""
+    if key.startswith("base.model."):
+        key = key[len("base.model."):]
+    elif key.startswith("base."):
+        key = key[len("base."):]
+
+    key = key.replace(".self_attn.", ".attn.")
+    key = key.replace(".input_layernorm.", ".attn_norm.")
+    key = key.replace(".post_attention_layernorm.", ".ffn_norm.")
+    key = key.replace(".mlp.router.weight", ".ffn.router_weight")
+    key = key.replace(".mlp.shared_expert.gate_W", ".ffn.shared.gate_proj.weight")
+    key = key.replace(".mlp.shared_expert.up_W", ".ffn.shared.up_proj.weight")
+    key = key.replace(".mlp.shared_expert.down_W", ".ffn.shared.down_proj.weight")
+    return key
+
+
 def _remap_real_keys(state: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
     """
     Translate real Outlier checkpoint keys to internal model key format.
@@ -393,22 +410,7 @@ def _remap_real_keys(state: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
     """
     out: Dict[str, torch.Tensor] = {}
     for k, v in state.items():
-        if k.startswith("base.model."):
-            k2 = k[len("base.model."):]
-        elif k.startswith("base."):
-            k2 = k[len("base."):]
-        else:
-            k2 = k
-
-        k2 = k2.replace(".self_attn.", ".attn.")
-        k2 = k2.replace(".input_layernorm.", ".attn_norm.")
-        k2 = k2.replace(".post_attention_layernorm.", ".ffn_norm.")
-        k2 = k2.replace(".mlp.router.weight",             ".ffn.router_weight")
-        k2 = k2.replace(".mlp.shared_expert.gate_W",      ".ffn.shared.gate_proj.weight")
-        k2 = k2.replace(".mlp.shared_expert.up_W",        ".ffn.shared.up_proj.weight")
-        k2 = k2.replace(".mlp.shared_expert.down_W",      ".ffn.shared.down_proj.weight")
-
-        out[k2] = v
+        out[_remap_real_key(k)] = v
     return out
 
 
@@ -474,6 +476,9 @@ class OutlierPagedModel(nn.Module):
         ])
         self.norm    = _RMSNorm(D)
         self.lm_head = _NoInitLinear(D, V, bias=False)
+        # Keep always-resident floating weights in FP16 instead of silently
+        # inflating to FP32 during checkpoint-backed initialization.
+        self.to(dtype=torch.float16)
 
         # Two-tier expert cache (both bounded with LRU eviction)
         self._lru_cache: OrderedDict[Tuple[int, int], _ExpertWeights] = OrderedDict()
@@ -491,8 +496,11 @@ class OutlierPagedModel(nn.Module):
         self._fmt: str = "toy"
 
         self._build_shard_index(model_dir)
+        warnings.warn(
+            "Quantizing shared expert weights to INT8 during paged model load.",
+            stacklevel=2,
+        )
         self._load_non_expert_weights(model_dir)
-        self._quantize_shared_experts()   # FP16 → INT8 for all shared experts
         self.to(self.device)
         self.eval()
 
@@ -550,77 +558,94 @@ class OutlierPagedModel(nn.Module):
     # ------------------------------------------------------------------
 
     def _load_non_expert_weights(self, model_dir: Path) -> None:
-        """Load all weights except ternary expert tensors."""
+        """Stream all non-expert weights directly into resident modules."""
         from safetensors import safe_open
+        from .quantize_utils import quantize_to_int8
 
         toy_expert_pat  = re.compile(r"^layers\.\d+\.ffn\.experts\.\d+\.")
         real_expert_pat = re.compile(
             r"^base\.model\.layers\.\d+\.mlp\.experts\.\d+\."
         )
-
-        state: Dict[str, torch.Tensor] = {}
+        assigned = 0
+        unexpected: list[str] = []
 
         for shard in sorted(model_dir.glob("*.safetensors")):
             with safe_open(str(shard), framework="pt", device="cpu") as f:
-                for key in f.keys():
-                    if toy_expert_pat.match(key) or real_expert_pat.match(key):
+                for raw_key in f.keys():
+                    if toy_expert_pat.match(raw_key) or real_expert_pat.match(raw_key):
                         continue
-                    state[key] = f.get_tensor(key)
+                    key = raw_key
+                    if self._fmt == "real":
+                        key = _remap_real_key(raw_key)
+                    elif key.startswith("model."):
+                        key = key[6:]
+                    tensor = f.get_tensor(raw_key)
 
-        if self._fmt == "real":
-            state = _remap_real_keys(state)
-        elif any(k.startswith("model.") for k in state):
-            state = {(k[6:] if k.startswith("model.") else k): v
-                     for k, v in state.items()}
+                    if key == "embed_tokens.weight":
+                        self.embed_tokens.weight.data.copy_(tensor.to(self.embed_tokens.weight.dtype))
+                        assigned += 1
+                        continue
+                    if key == "norm.weight":
+                        self.norm.weight.data.copy_(tensor.to(self.norm.weight.dtype))
+                        assigned += 1
+                        continue
+                    if key == "lm_head.weight":
+                        self.lm_head.weight.data.copy_(tensor.to(self.lm_head.weight.dtype))
+                        assigned += 1
+                        continue
 
-        missing, unexpected = self.load_state_dict(state, strict=False)
-        non_expert_missing = [k for k in missing if "experts" not in k]
-        if non_expert_missing:
-            warnings.warn(
-                f"Missing non-expert keys (first 5): {non_expert_missing[:5]}"
-            )
+                    layer_match = re.match(r"^layers\.(\d+)\.(.+)$", key)
+                    if not layer_match:
+                        unexpected.append(key)
+                        continue
+                    layer_idx = int(layer_match.group(1))
+                    suffix = layer_match.group(2)
+                    layer = self.layers[layer_idx]
+
+                    if suffix == "attn_norm.weight":
+                        layer.attn_norm.weight.data.copy_(tensor.to(layer.attn_norm.weight.dtype))
+                    elif suffix == "ffn_norm.weight":
+                        layer.ffn_norm.weight.data.copy_(tensor.to(layer.ffn_norm.weight.dtype))
+                    elif suffix.startswith("attn."):
+                        proj_name, param_name = suffix[len("attn."):].rsplit(".", 1)
+                        module = getattr(layer.attn, proj_name, None)
+                        target = getattr(module, param_name, None) if module is not None else None
+                        if target is None:
+                            unexpected.append(key)
+                            continue
+                        target.data.copy_(tensor.to(target.dtype))
+                    elif suffix == "ffn.router_weight":
+                        layer.ffn.router_weight.data.copy_(tensor.to(layer.ffn.router_weight.dtype))
+                    elif suffix.startswith("ffn.shared."):
+                        shared = layer.ffn.shared
+                        if not isinstance(shared, _Int8SwiGLU):
+                            unexpected.append(key)
+                            continue
+                        proj = suffix[len("ffn.shared."):]
+                        if proj == "gate_proj.weight":
+                            q, s = quantize_to_int8(tensor)
+                            shared.gate_w.copy_(q)
+                            shared.gate_s.copy_(s.to(shared.gate_s.dtype))
+                        elif proj == "up_proj.weight":
+                            q, s = quantize_to_int8(tensor)
+                            shared.up_w.copy_(q)
+                            shared.up_s.copy_(s.to(shared.up_s.dtype))
+                        elif proj == "down_proj.weight":
+                            q, s = quantize_to_int8(tensor)
+                            shared.down_w.copy_(q)
+                            shared.down_s.copy_(s.to(shared.down_s.dtype))
+                        else:
+                            unexpected.append(key)
+                            continue
+                    else:
+                        unexpected.append(key)
+                        continue
+                    assigned += 1
+
+        if assigned == 0:
+            raise RuntimeError("No non-expert weights were assigned during paged load.")
         if unexpected:
             warnings.warn(f"Unexpected keys (first 5): {unexpected[:5]}")
-
-    # ------------------------------------------------------------------
-    # Shared expert INT8 quantisation
-    # ------------------------------------------------------------------
-
-    def _quantize_shared_experts(self) -> None:
-        """
-        Quantise every shared expert FP16 SwiGLU to INT8 in-place.
-
-        Called after _load_non_expert_weights, before self.to(device).
-        Saves ~5.2 GB (FP16 10.5 GB → INT8 5.3 GB) for outlier-7b-v0.
-        """
-        from .quantize_utils import quantize_to_int8
-
-        for layer in self.layers:
-            ffn = getattr(layer, "ffn", None)
-            if not isinstance(ffn, _PagedMoEFFN):
-                continue
-            old = ffn.shared
-            if not isinstance(old, _SwiGLU):
-                continue
-
-            D = old.gate_proj.weight.shape[1]   # hidden_dim
-            I = old.gate_proj.weight.shape[0]   # intermediate_dim
-            new_shared = _Int8SwiGLU(D, I)
-
-            new_shared.gate_w, new_shared.gate_s = quantize_to_int8(
-                old.gate_proj.weight.data
-            )
-            new_shared.up_w, new_shared.up_s = quantize_to_int8(
-                old.up_proj.weight.data
-            )
-            new_shared.down_w, new_shared.down_s = quantize_to_int8(
-                old.down_proj.weight.data
-            )
-
-            ffn.shared = new_shared
-            del old
-
-        gc.collect()
 
     # ------------------------------------------------------------------
     # Expert paging (two-tier LRU)
@@ -894,3 +919,14 @@ class OutlierPagedModel(nn.Module):
             f"{self._cache_evictions} device evictions"
         )
         return tokens
+
+    def cache_stats(self) -> Dict[str, float]:
+        total = self._cache_hits + self._cache_misses
+        hit_rate = self._cache_hits / total if total > 0 else 0.0
+        return {
+            "hits": self._cache_hits,
+            "misses": self._cache_misses,
+            "lookups": total,
+            "hit_rate": hit_rate,
+            "evictions": self._cache_evictions,
+        }

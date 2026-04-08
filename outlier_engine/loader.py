@@ -43,8 +43,14 @@ def _candidate_devices(requested_device: Optional[str]) -> list[str]:
     return [_auto_device()]
 
 
-def _resolve_model_dir(model_ref: str, token: Optional[str] = None) -> Path:
-    model_ref = _canonical_model_ref(model_ref)
+def _resolve_model_dir(
+    model_ref: str,
+    token: Optional[str] = None,
+    *,
+    canonicalize: bool = True,
+) -> Path:
+    if canonicalize:
+        model_ref = _canonical_model_ref(model_ref)
     path = Path(model_ref).expanduser()
     if path.exists():
         return path.resolve()
@@ -166,8 +172,9 @@ def load_model(
     max_experts_in_memory: int = 4,
     max_warm_cache: int = 16,
 ) -> LoadedOutlier:
-    resolved_ref = _canonical_model_ref(model_ref)
-    model_dir = _resolve_model_dir(model_ref, token=token)
+    use_alias = paged is not True
+    resolved_ref = _canonical_model_ref(model_ref) if use_alias else model_ref
+    model_dir = _resolve_model_dir(model_ref, token=token, canonicalize=use_alias)
     config = _normalize_config(_read_config(model_dir))
     n_experts = int(config.get("n_experts", 0))
     if paged is None:

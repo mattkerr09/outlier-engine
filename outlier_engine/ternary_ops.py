@@ -36,6 +36,10 @@ import torch
 CHUNK_COLS: int = 256   # 256 packed cols = 1024 original cols
 
 
+def _matmul_compute_dtype(x: torch.Tensor) -> torch.dtype:
+    return torch.float32 if x.device.type == "cpu" else torch.float16
+
+
 # ---------------------------------------------------------------------------
 # Quantization
 # ---------------------------------------------------------------------------
@@ -178,8 +182,9 @@ def ternary_matmul_packed(
     batch         = x.shape[0]
     padded_in     = packed_cols * 4
 
-    result = torch.zeros(batch, out_features, device=x.device, dtype=torch.float32)
-    x_f    = x.float()
+    compute_dtype = _matmul_compute_dtype(x)
+    result = torch.zeros(batch, out_features, device=x.device, dtype=compute_dtype)
+    x_f    = x.to(compute_dtype)
 
     # Pad x to match the padded weight dimension (zero-pad)
     if original_in_features < padded_in:
@@ -187,7 +192,7 @@ def ternary_matmul_packed(
             [
                 x_f,
                 torch.zeros(batch, padded_in - original_in_features,
-                             device=x.device, dtype=torch.float32),
+                             device=x.device, dtype=compute_dtype),
             ],
             dim=1,
         )
@@ -205,8 +210,8 @@ def ternary_matmul_packed(
         # w_codes: (out_features, C*4)  uint8, values in {0, 1, 3}
 
         # Sign decomposition (1 byte per weight, not 4)
-        w_pos = (w_codes == 1).float()   # +1 positions  (out_features, C*4)
-        w_neg = (w_codes == 3).float()   # -1 positions
+        w_pos = (w_codes == 1).to(compute_dtype)   # +1 positions  (out_features, C*4)
+        w_neg = (w_codes == 3).to(compute_dtype)   # -1 positions
 
         x_chunk = x_f[:, start * 4 : end * 4]   # (batch, C*4)
         result += x_chunk @ w_pos.T
@@ -215,13 +220,13 @@ def ternary_matmul_packed(
         del w_pos, w_neg, w_codes   # free chunk memory
 
     # Apply scale
-    s = scale.float()
+    s = scale.to(compute_dtype)
     if s.dim() == 0:
         result = result * s
     else:
         result = result * s.view(1, -1)
 
-    return result   # float32
+    return result.float()
 
 
 # ---------------------------------------------------------------------------
@@ -249,8 +254,9 @@ def ternary_matmul_direct(
     out_features   = weight_int8.shape[0]
     chunk_size     = CHUNK_COLS * 4   # 1024 original cols per chunk
 
-    result = torch.zeros(batch, out_features, device=x.device, dtype=torch.float32)
-    x_f    = x.float()
+    compute_dtype = _matmul_compute_dtype(x)
+    result = torch.zeros(batch, out_features, device=x.device, dtype=compute_dtype)
+    x_f    = x.to(compute_dtype)
 
     for start in range(0, in_features, chunk_size):
         end     = min(start + chunk_size, in_features)
@@ -258,18 +264,18 @@ def ternary_matmul_direct(
         x_chunk = x_f[:, start:end]            # (batch, C)
 
         # Sign decomposition: avoids any float copy of the full weight
-        w_pos = (w_chunk == 1).float()
-        w_neg = (w_chunk == -1).float()
+        w_pos = (w_chunk == 1).to(compute_dtype)
+        w_neg = (w_chunk == -1).to(compute_dtype)
 
         result += x_chunk @ w_pos.T
         result -= x_chunk @ w_neg.T
 
         del w_pos, w_neg
 
-    s = scale.float()
+    s = scale.to(compute_dtype)
     if s.dim() == 0:
         result = result * s
     else:
         result = result * s.view(1, -1)
 
-    return result   # float32
+    return result.float()
