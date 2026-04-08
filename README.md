@@ -41,12 +41,12 @@ Paged mode is experimental today.
 
 - Measured on Apple M1 Ultra (MPS) with `Outlier-Ai/Outlier-10B`
 - Prompt: `"Hello"`
-- Token 1 latency: `48.22s`
-- Tokens 2-5 average latency: `23.30s`
-- Peak RSS during the run: `3.32 GB`
-- Cache hit rate after token 1: `0.0%`
+- Token 1 latency: `49.54s`
+- Tokens 2-5 average latency: `12.93s`
+- Peak RSS during the run: `7.11 GB`
+- Cache hit rate after token 1: `99.6%`
 
-Current takeaway: paged mode keeps memory low, but cache warming is not working yet, so latency is still far too high for a good demo path.
+Current takeaway: cache warming is now working, but paged mode is still too slow for a polished demo path. It is useful as a low-memory experimental backend, not the default fast path.
 
 ## Commands
 

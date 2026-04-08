@@ -100,6 +100,8 @@ def main() -> int:
 
     with torch.no_grad():
         for idx in range(args.tokens):
+            if hasattr(loaded.model, "outlier_page_manager"):
+                loaded.model.outlier_page_manager.debug_forward_start(f"token_{idx + 1}")
             step_input = generated if past_key_values is None else generated[:, -1:]
             step_mask = attention_mask
             t0 = time.perf_counter()
@@ -137,12 +139,16 @@ def main() -> int:
     tail = token_latencies[1:] if len(token_latencies) > 1 else []
     tail_avg = (sum(tail) / len(tail)) if tail else 0.0
     post_first = cache_snapshots[0] if cache_snapshots else {}
+    final_stats = cache_snapshots[-1] if cache_snapshots else {}
+    hits_after_first = int(final_stats.get("hits", 0)) - int(post_first.get("hits", 0))
+    lookups_after_first = int(final_stats.get("lookups", 0)) - int(post_first.get("lookups", 0))
+    hit_rate_after_first = hits_after_first / lookups_after_first if lookups_after_first > 0 else 0.0
 
     print("summary")
     print(f"token_1_latency_s={token1:.2f}")
     print(f"token_2_to_5_avg_latency_s={tail_avg:.2f}")
-    print(f"cache_hit_rate_after_token_1={post_first.get('hit_rate', 0.0):.1%}")
-    print(f"final_cache_stats={cache_snapshots[-1] if cache_snapshots else {}}")
+    print(f"cache_hit_rate_after_token_1={hit_rate_after_first:.1%}")
+    print(f"final_cache_stats={final_stats}")
     print(f"peak_rss_gb={_peak_rss_gb():.2f}")
     print(f"generated_text={''.join(token_texts)!r}")
     return 0

@@ -170,7 +170,7 @@ def load_model(
     device: Optional[str] = None,
     paged: Optional[bool] = None,
     max_experts_in_memory: int = 4,
-    max_warm_cache: int = 16,
+    max_warm_cache: int = 256,
     packed_experts_dir: Optional[str] = None,
 ) -> LoadedOutlier:
     use_alias = paged is not True

@@ -1,0 +1,24 @@
+model=Outlier-Ai/Outlier-10B
+device=mps
+prompt='Hello'
+target_new_tokens=5
+loading paged model...
+Fetching 34 files:   0%|          | 0/34 [00:00<?, ?it/s]Fetching 34 files: 100%|██████████| 34/34 [00:00<00:00, 108363.48it/s]
+You are using a model of type `outlier_moe` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+backend=hf
+prompt_tokens=30
+load_time_s=6.31
+peak_rss_gb_after_load=1.78
+starting token benchmark...
+token_1: latency_s=49.54 text='0' hits=0 misses=115 lookups=115 hit_rate=0.0% peak_rss_gb=7.01
+token_2: latency_s=13.12 text='0' hits=55 misses=116 lookups=171 hit_rate=32.2% peak_rss_gb=7.11
+token_3: latency_s=12.85 text='0' hits=111 misses=116 lookups=227 hit_rate=48.9% peak_rss_gb=7.11
+token_4: latency_s=12.79 text='0' hits=167 misses=116 lookups=283 hit_rate=59.0% peak_rss_gb=7.11
+token_5: latency_s=12.96 text='0' hits=223 misses=116 lookups=339 hit_rate=65.8% peak_rss_gb=7.11
+summary
+token_1_latency_s=49.54
+token_2_to_5_avg_latency_s=12.93
+cache_hit_rate_after_token_1=99.6%
+final_cache_stats={'hits': 223, 'device_hits': 0, 'warm_hits': 223, 'misses': 116, 'lookups': 339, 'hit_rate': 0.6578171091445427, 'evictions': 335, 'disk_loads': 116, 'disk_load_s': 15.183356663006634, 'avg_disk_load_ms': 130.89100571557444}
+peak_rss_gb=7.11
+generated_text='00000'

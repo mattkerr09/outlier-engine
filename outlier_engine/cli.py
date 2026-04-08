@@ -38,7 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--paged", action="store_true")
     run_parser.add_argument("--full", action="store_true")
     run_parser.add_argument("--max-experts", type=int, default=4, dest="max_experts")
-    run_parser.add_argument("--max-warm-cache", type=int, default=16, dest="max_warm_cache")
+    run_parser.add_argument("--max-warm-cache", type=int, default=256, dest="max_warm_cache")
     run_parser.add_argument("--verbose", action="store_true", help="Print token IDs and repr() chunks while generating.")
 
     info_parser = subparsers.add_parser("info", help="Print model architecture and artifact info.")

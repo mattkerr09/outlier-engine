@@ -9,7 +9,7 @@ Memory optimisations in v0.3:
   3. Shared expert quantised to INT8 at load time (saves ~5 GB vs FP16).
   4. Both caches are bounded (LRU):
        device cache : max_experts_in_memory  (default 4)
-       CPU warm cache: max_warm_cache         (default 16)
+       CPU warm cache: max_warm_cache         (default 256)
 
 Supports two checkpoint formats, auto-detected at load time:
 
@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import gc
 import json
+import os
 import re
 import time
 import warnings
@@ -454,7 +455,7 @@ def load_hybrid_paged_qwen(
     *,
     device: str = "mps",
     max_experts_in_memory: int = 4,
-    max_warm_cache: int = 16,
+    max_warm_cache: int = 256,
     packed_experts_dir: Optional[str] = None,
 ):
     """Build a native Qwen2 model and swap only the MLP path for paged MoE."""
@@ -666,7 +667,7 @@ class ExpertPageManager:
         *,
         n_experts: int,
         max_experts_in_memory: int = 4,
-        max_warm_cache: int = 16,
+        max_warm_cache: int = 256,
         packed_experts_dir: Optional[str] = None,
     ) -> None:
         self.model_dir = Path(model_dir)
@@ -674,10 +675,13 @@ class ExpertPageManager:
         self.n_experts = n_experts
         self.max_experts_in_memory = max_experts_in_memory
         self.max_warm_cache = max_warm_cache
+        self._debug = bool(os.environ.get("OUTLIER_CACHE_DEBUG"))
+        self._forward_passes = 0
 
         self._lru_cache: OrderedDict[Tuple[int, int], _ExpertWeights] = OrderedDict()
         self._cpu_cache: OrderedDict[Tuple[int, int], _ExpertWeights] = OrderedDict()
-        self._cache_hits = 0
+        self._device_hits = 0
+        self._warm_hits = 0
         self._cache_misses = 0
         self._cache_evictions = 0
         self._disk_loads = 0
@@ -689,6 +693,18 @@ class ExpertPageManager:
 
         self._build_shard_index()
         self._load_packed_index()
+
+    def _debug_log(self, message: str) -> None:
+        if self._debug:
+            print(f"[OUTLIER_CACHE_DEBUG] {message}", flush=True)
+
+    def debug_forward_start(self, label: str | None = None) -> None:
+        self._forward_passes += 1
+        tag = label or f"forward_{self._forward_passes}"
+        self._debug_log(
+            f"{tag}: device_cache={len(self._lru_cache)}/{self.max_experts_in_memory} "
+            f"warm_cache={len(self._cpu_cache)}/{self.max_warm_cache}"
+        )
 
     def _build_shard_index(self) -> None:
         from safetensors import safe_open
@@ -728,24 +744,29 @@ class ExpertPageManager:
     def get_expert(self, layer_idx: int, expert_idx: int) -> _ExpertWeights:
         key = (layer_idx, expert_idx)
         on_cpu = self.device.type == "cpu"
+        self._debug_log(f"lookup key={key}")
 
         if key in self._lru_cache:
             self._lru_cache.move_to_end(key)
-            self._cache_hits += 1
+            self._device_hits += 1
+            self._debug_log(f"hit level=device key={key}")
             return self._lru_cache[key]
-
-        self._cache_misses += 1
 
         if len(self._lru_cache) >= self.max_experts_in_memory:
             evicted_key, evicted_w = self._lru_cache.popitem(last=False)
             self._cache_evictions += 1
             cached_w = evicted_w.cpu() if on_cpu else evicted_w.cpu().pack_tq10()
             self._add_to_warm_cache(evicted_key, cached_w)
+            self._debug_log(f"evict key={evicted_key}")
 
         if key in self._cpu_cache:
             self._cpu_cache.move_to_end(key)
             weights_cached = self._cpu_cache[key]
+            self._warm_hits += 1
+            self._debug_log(f"hit level=warm key={key}")
         else:
+            self._cache_misses += 1
+            self._debug_log(f"miss key={key}")
             start = time.perf_counter()
             weights_int8 = self._load_expert_from_disk(layer_idx, expert_idx)
             self._disk_loads += 1
@@ -827,10 +848,13 @@ class ExpertPageManager:
         )
 
     def cache_stats(self) -> Dict[str, float]:
-        total = self._cache_hits + self._cache_misses
-        hit_rate = self._cache_hits / total if total > 0 else 0.0
+        total_hits = self._device_hits + self._warm_hits
+        total = total_hits + self._cache_misses
+        hit_rate = total_hits / total if total > 0 else 0.0
         return {
-            "hits": self._cache_hits,
+            "hits": total_hits,
+            "device_hits": self._device_hits,
+            "warm_hits": self._warm_hits,
             "misses": self._cache_misses,
             "lookups": total,
             "hit_rate": hit_rate,
@@ -973,7 +997,7 @@ class OutlierPagedModel(nn.Module):
         model_path:            Local directory with config.json + *.safetensors.
         device:                Torch device string (default "mps").
         max_experts_in_memory: LRU device cache capacity (default 4).
-        max_warm_cache:        LRU CPU warm cache capacity (default 16).
+        max_warm_cache:        LRU CPU warm cache capacity (default 256).
     """
 
     def __init__(
@@ -981,7 +1005,7 @@ class OutlierPagedModel(nn.Module):
         model_path: str,
         device: str = "mps",
         max_experts_in_memory: int = 4,
-        max_warm_cache: int = 16,
+        max_warm_cache: int = 256,
         packed_experts_dir: Optional[str] = None,
     ) -> None:
         super().__init__()
