@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import os
+import resource
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+import torch
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from outlier_engine.loader import load_model
+
+
+def _peak_rss_gb() -> float:
+    usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    # macOS reports bytes, Linux typically reports KB.
+    if usage > 1_000_000_000:
+        return usage / (1024 ** 3)
+    return usage / (1024 ** 2)
+
+
+def _default_device() -> str:
+    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def _sync(device: str) -> None:
+    if device == "mps":
+        try:
+            torch.mps.synchronize()
+        except Exception:
+            pass
+    elif device == "cuda" and torch.cuda.is_available():
+        torch.cuda.synchronize()
+
+
+def _format_cache(stats: dict[str, Any] | None) -> str:
+    if not stats:
+        return "cache=unavailable"
+    return (
+        f"hits={stats.get('hits', 0)} "
+        f"misses={stats.get('misses', 0)} "
+        f"lookups={stats.get('lookups', 0)} "
+        f"hit_rate={stats.get('hit_rate', 0.0):.1%}"
+    )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Benchmark paged Outlier inference token by token.")
+    parser.add_argument("--model", default="Outlier-Ai/Outlier-10B")
+    parser.add_argument("--prompt", default="Hello")
+    parser.add_argument("--tokens", type=int, default=5)
+    parser.add_argument("--device", default=_default_device())
+    args = parser.parse_args()
+
+    print(f"model={args.model}")
+    print(f"device={args.device}")
+    print(f"prompt={args.prompt!r}")
+    print(f"target_new_tokens={args.tokens}")
+    print("loading paged model...", flush=True)
+
+    load_t0 = time.perf_counter()
+    loaded = load_model(args.model, paged=True, device=args.device)
+    _sync(args.device)
+    load_s = time.perf_counter() - load_t0
+
+    tokenizer = loaded.tokenizer
+    prompt_text = tokenizer.prepare_prompt(args.prompt) if hasattr(tokenizer, "prepare_prompt") else args.prompt
+    prompt_ids = tokenizer.encode(prompt_text)
+    if not prompt_ids:
+        raise SystemExit("Prompt encoded to an empty token list.")
+
+    device = getattr(loaded.model, "outlier_device", loaded.device)
+    if isinstance(device, torch.device):
+        device_name = device.type
+    else:
+        device_name = str(device)
+    input_ids = torch.tensor([prompt_ids], dtype=torch.long, device=device_name)
+
+    print(f"backend={loaded.backend}")
+    print(f"prompt_tokens={input_ids.shape[1]}")
+    print(f"load_time_s={load_s:.2f}")
+    print(f"peak_rss_gb_after_load={_peak_rss_gb():.2f}")
+    print("starting token benchmark...", flush=True)
+
+    token_latencies: list[float] = []
+    token_texts: list[str] = []
+    cache_snapshots: list[dict[str, Any]] = []
+    past_key_values = None
+    attention_mask = torch.ones_like(input_ids, device=input_ids.device)
+    generated = input_ids
+
+    with torch.no_grad():
+        for idx in range(args.tokens):
+            step_input = generated if past_key_values is None else generated[:, -1:]
+            step_mask = attention_mask
+            t0 = time.perf_counter()
+            outputs = loaded.model(
+                input_ids=step_input,
+                attention_mask=step_mask,
+                past_key_values=past_key_values,
+                use_cache=True,
+            )
+            _sync(device_name)
+            elapsed = time.perf_counter() - t0
+            token_latencies.append(elapsed)
+
+            logits = outputs.logits if hasattr(outputs, "logits") else outputs
+            next_token = int(logits[0, -1].argmax().item())
+            token_text = tokenizer.decode([next_token]) if hasattr(tokenizer, "decode") else str(next_token)
+            token_texts.append(token_text)
+            generated = torch.cat(
+                [generated, torch.tensor([[next_token]], dtype=torch.long, device=generated.device)],
+                dim=1,
+            )
+            attention_mask = torch.ones_like(generated, device=generated.device)
+            past_key_values = getattr(outputs, "past_key_values", None)
+
+            stats = loaded.model.cache_stats() if hasattr(loaded.model, "cache_stats") else None
+            cache_snapshots.append(dict(stats) if stats else {})
+            print(
+                f"token_{idx + 1}: latency_s={elapsed:.2f} "
+                f"text={token_text!r} {_format_cache(stats)} "
+                f"peak_rss_gb={_peak_rss_gb():.2f}",
+                flush=True,
+            )
+
+    token1 = token_latencies[0] if token_latencies else 0.0
+    tail = token_latencies[1:] if len(token_latencies) > 1 else []
+    tail_avg = (sum(tail) / len(tail)) if tail else 0.0
+    post_first = cache_snapshots[0] if cache_snapshots else {}
+
+    print("summary")
+    print(f"token_1_latency_s={token1:.2f}")
+    print(f"token_2_to_5_avg_latency_s={tail_avg:.2f}")
+    print(f"cache_hit_rate_after_token_1={post_first.get('hit_rate', 0.0):.1%}")
+    print(f"final_cache_stats={cache_snapshots[-1] if cache_snapshots else {}}")
+    print(f"peak_rss_gb={_peak_rss_gb():.2f}")
+    print(f"generated_text={''.join(token_texts)!r}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

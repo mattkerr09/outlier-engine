@@ -35,6 +35,19 @@ All benchmarks: lm-evaluation-harness v0.4.9.1, N=570, 5-shot, bf16.
 | Apple M1 Ultra (MPS) | 16.9 | Default on macOS |
 | CPU fallback | ~0.5 | Any platform |
 
+## Paged Inference
+
+Paged mode is experimental today.
+
+- Measured on Apple M1 Ultra (MPS) with `Outlier-Ai/Outlier-10B`
+- Prompt: `"Hello"`
+- Token 1 latency: `48.22s`
+- Tokens 2-5 average latency: `23.30s`
+- Peak RSS during the run: `3.32 GB`
+- Cache hit rate after token 1: `0.0%`
+
+Current takeaway: paged mode keeps memory low, but cache warming is not working yet, so latency is still far too high for a good demo path.
+
 ## Commands
 
 ```bash
