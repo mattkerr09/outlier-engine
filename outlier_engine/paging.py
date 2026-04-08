@@ -1087,20 +1087,22 @@ class OutlierPagedModel(nn.Module):
                 # Shared expert (always device-resident, INT8 quantised)
                 shared_out = ffn.shared(h_flat).float()   # [N, D]
 
-                # Ternary experts (paged — int8 on device, 2-bit in CPU cache)
+                # Ternary experts: load each unique expert once for all tokens
                 expert_out = torch.zeros(
                     N, D, device=self.device, dtype=torch.float32
                 )
-                for k in range(self.top_k):
-                    for e in range(self.n_experts):
-                        mask_e = (top_idx[:, k] == e)
-                        if mask_e.any():
-                            if prefetcher is not None:
-                                w = prefetcher.get_expert(i, e)
-                            else:
-                                w = self.load_expert(i, e)
-                            out = _run_expert(h_flat[mask_e], w)   # float32
-                            expert_out[mask_e] += top_w[mask_e, k:k+1] * out
+                for e in torch.unique(top_idx).tolist():
+                    assignment = (top_idx == e)
+                    token_mask = assignment.any(dim=-1)
+                    if not token_mask.any():
+                        continue
+                    weights = (top_w * assignment.to(top_w.dtype)).sum(dim=-1, keepdim=True)
+                    if prefetcher is not None:
+                        w = prefetcher.get_expert(i, int(e))
+                    else:
+                        w = self.load_expert(i, int(e))
+                    out = _run_expert(h_flat[token_mask], w)
+                    expert_out[token_mask] += weights[token_mask] * out
 
                 if prefetcher is not None:
                     prefetcher.clear_layer(i)
@@ -1145,16 +1147,7 @@ class OutlierPagedModel(nn.Module):
         tokens = input_ids
         kv_cache = KVCache()
 
-        prompt = input_ids
-        logits: Optional[torch.Tensor] = None
-        for pos in range(prompt.shape[1]):
-            logits = self.forward(
-                prompt[:, pos : pos + 1],
-                kv_cache=kv_cache,
-                use_cache=True,
-            )
-        if logits is None:
-            raise RuntimeError("Paged generation received an empty prompt.")
+        logits = self.forward(tokens, kv_cache=kv_cache, use_cache=True)
 
         for _ in range(max_new_tokens):
             next_logits = logits[:, -1, :]
