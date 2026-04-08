@@ -46,8 +46,9 @@ def _format_cache(stats: dict[str, Any] | None) -> str:
     if not stats:
         return "cache=unavailable"
     return (
-        f"hits={stats.get('hits', 0)} "
-        f"misses={stats.get('misses', 0)} "
+        f"hot_hits={stats.get('hot_hits', 0)} "
+        f"warm_hits={stats.get('warm_hits', 0)} "
+        f"cold_misses={stats.get('cold_misses', stats.get('misses', 0))} "
         f"lookups={stats.get('lookups', 0)} "
         f"hit_rate={stats.get('hit_rate', 0.0):.1%}"
     )
@@ -131,6 +132,8 @@ def main() -> int:
             print(
                 f"token_{idx + 1}: latency_s={elapsed:.2f} "
                 f"text={token_text!r} {_format_cache(stats)} "
+                f"hot_cache_entries={stats.get('hot_cache_entries', 0) if stats else 0} "
+                f"hot_cache_mb={stats.get('hot_cache_mb', 0.0):.1f} "
                 f"peak_rss_gb={_peak_rss_gb():.2f}",
                 flush=True,
             )
@@ -140,14 +143,24 @@ def main() -> int:
     tail_avg = (sum(tail) / len(tail)) if tail else 0.0
     post_first = cache_snapshots[0] if cache_snapshots else {}
     final_stats = cache_snapshots[-1] if cache_snapshots else {}
-    hits_after_first = int(final_stats.get("hits", 0)) - int(post_first.get("hits", 0))
     lookups_after_first = int(final_stats.get("lookups", 0)) - int(post_first.get("lookups", 0))
-    hit_rate_after_first = hits_after_first / lookups_after_first if lookups_after_first > 0 else 0.0
+    hot_hits_after_first = int(final_stats.get("hot_hits", 0)) - int(post_first.get("hot_hits", 0))
+    warm_hits_after_first = int(final_stats.get("warm_hits", 0)) - int(post_first.get("warm_hits", 0))
+    cold_after_first = int(final_stats.get("cold_misses", final_stats.get("misses", 0))) - int(
+        post_first.get("cold_misses", post_first.get("misses", 0))
+    )
+    hot_hit_rate_after_first = hot_hits_after_first / lookups_after_first if lookups_after_first > 0 else 0.0
+    warm_hit_rate_after_first = warm_hits_after_first / lookups_after_first if lookups_after_first > 0 else 0.0
+    cold_miss_rate_after_first = cold_after_first / lookups_after_first if lookups_after_first > 0 else 0.0
 
     print("summary")
     print(f"token_1_latency_s={token1:.2f}")
     print(f"token_2_to_5_avg_latency_s={tail_avg:.2f}")
-    print(f"cache_hit_rate_after_token_1={hit_rate_after_first:.1%}")
+    print(f"hot_hit_rate_after_token_1={hot_hit_rate_after_first:.1%}")
+    print(f"warm_hit_rate_after_token_1={warm_hit_rate_after_first:.1%}")
+    print(f"cold_miss_rate_after_token_1={cold_miss_rate_after_first:.1%}")
+    print(f"hot_cache_entries={final_stats.get('hot_cache_entries', 0)}")
+    print(f"hot_cache_mb={final_stats.get('hot_cache_mb', 0.0):.1f}")
     print(f"final_cache_stats={final_stats}")
     print(f"peak_rss_gb={_peak_rss_gb():.2f}")
     print(f"generated_text={''.join(token_texts)!r}")

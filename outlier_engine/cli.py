@@ -37,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--hf-token", default=None, dest="hf_token")
     run_parser.add_argument("--paged", action="store_true")
     run_parser.add_argument("--full", action="store_true")
-    run_parser.add_argument("--max-experts", type=int, default=4, dest="max_experts")
+    run_parser.add_argument("--max-experts", type=int, default=64, dest="max_experts")
     run_parser.add_argument("--max-warm-cache", type=int, default=256, dest="max_warm_cache")
     run_parser.add_argument("--verbose", action="store_true", help="Print token IDs and repr() chunks while generating.")
 

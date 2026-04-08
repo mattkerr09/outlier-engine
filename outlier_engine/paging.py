@@ -8,7 +8,7 @@ Memory optimisations in v0.3:
      materialises float copies of the full weight matrix).
   3. Shared expert quantised to INT8 at load time (saves ~5 GB vs FP16).
   4. Both caches are bounded (LRU):
-       device cache : max_experts_in_memory  (default 4)
+       hot cache : max_experts_in_memory  (default 64)
        CPU warm cache: max_warm_cache         (default 256)
 
 Supports two checkpoint formats, auto-detected at load time:
@@ -31,7 +31,7 @@ Supports two checkpoint formats, auto-detected at load time:
                base.model.layers.{i}.mlp.experts.{j}.{gate,up,down}_{ternary,scale}
 
 Paging policy:
-  Device (hot)    ← max_experts_in_memory  (LRU eviction to CPU)
+  Device-ready hot cache ← max_experts_in_memory  (LRU eviction only)
   CPU RAM (warm)  ← max_warm_cache          (LRU eviction to disk/cold)
   Disk (cold)     ← safetensors shards, read on first access only
 
@@ -203,7 +203,7 @@ class _ExpertWeights:
     packed=True:  weights are uint8 in a compact cache format
                   either 2-bit or TQ1_0 base-3 packed.
 
-    Device cache stores int8 (fast matmul via ternary_matmul_direct).
+    Hot cache stores dequantized weights ready for matmul.
     CPU warm cache stores packed uint8 (memory-efficient).
     """
 
@@ -212,6 +212,7 @@ class _ExpertWeights:
         "up_w",   "up_s",
         "down_w", "down_s",
         "packed",
+        "dequantized",
         "packed_format",
         "shapes",
     )
@@ -222,6 +223,7 @@ class _ExpertWeights:
         up_w:   torch.Tensor, up_s:   torch.Tensor,
         down_w: torch.Tensor, down_s: torch.Tensor,
         packed: bool = False,
+        dequantized: bool = False,
         packed_format: str = "raw",
         shapes: Optional[Dict[str, Tuple[int, ...]]] = None,
     ) -> None:
@@ -229,6 +231,7 @@ class _ExpertWeights:
         self.up_w   = up_w;    self.up_s   = up_s
         self.down_w = down_w;  self.down_s = down_s
         self.packed = packed
+        self.dequantized = dequantized
         self.packed_format = packed_format
         self.shapes = shapes or {}
 
@@ -238,6 +241,7 @@ class _ExpertWeights:
             self.up_w.to(device),   self.up_s.to(device),
             self.down_w.to(device), self.down_s.to(device),
             packed=self.packed,
+            dequantized=self.dequantized,
             packed_format=self.packed_format,
             shapes=dict(self.shapes),
         )
@@ -259,6 +263,7 @@ class _ExpertWeights:
             pack_ternary_2bit(self.up_w),   self.up_s,
             pack_ternary_2bit(self.down_w), self.down_s,
             packed=True,
+            dequantized=False,
             packed_format="2bit",
             shapes={
                 "gate": tuple(self.gate_w.shape),
@@ -276,6 +281,7 @@ class _ExpertWeights:
             pack_ternary_tq10(self.up_w),   self.up_s,
             pack_ternary_tq10(self.down_w), self.down_s,
             packed=True,
+            dequantized=False,
             packed_format="tq10",
             shapes={
                 "gate": tuple(self.gate_w.shape),
@@ -297,6 +303,7 @@ class _ExpertWeights:
                 unpack_ternary_2bit(self.up_w,   gate_in), self.up_s,
                 unpack_ternary_2bit(self.down_w, down_in), self.down_s,
                 packed=False,
+                dequantized=False,
             )
         if self.packed_format == "tq10":
             gate_shape = self.shapes.get("gate")
@@ -309,8 +316,33 @@ class _ExpertWeights:
                 unpack_ternary_tq10(self.up_w,   up_shape), self.up_s,
                 unpack_ternary_tq10(self.down_w, down_shape), self.down_s,
                 packed=False,
+                dequantized=False,
             )
         raise RuntimeError(f"Unsupported packed format: {self.packed_format}")
+
+    def hot_ready(self, device: torch.device) -> "_ExpertWeights":
+        """Return dequantized weights ready for matmul on the target device."""
+        weights = self.unpack_to_int8() if self.packed else self
+        compute_dtype = torch.float32 if device.type == "cpu" else torch.float16
+        gate_s = weights.gate_s.to(device=device, dtype=compute_dtype)
+        up_s = weights.up_s.to(device=device, dtype=compute_dtype)
+        down_s = weights.down_s.to(device=device, dtype=compute_dtype)
+        return _ExpertWeights(
+            weights.gate_w.to(device=device, dtype=compute_dtype) * gate_s,
+            gate_s,
+            weights.up_w.to(device=device, dtype=compute_dtype) * up_s,
+            up_s,
+            weights.down_w.to(device=device, dtype=compute_dtype) * down_s,
+            down_s,
+            packed=False,
+            dequantized=True,
+        )
+
+    def nbytes(self) -> int:
+        return sum(
+            tensor.numel() * tensor.element_size()
+            for tensor in (self.gate_w, self.gate_s, self.up_w, self.up_s, self.down_w, self.down_s)
+        )
 
     # ------------------------------------------------------------------
     # Forward compute
@@ -330,6 +362,13 @@ class _ExpertWeights:
         if self.packed:
             unpacked = self.unpack_to_int8()
             return unpacked.run(x)
+
+        if self.dequantized:
+            compute_dtype = torch.float32 if x.device.type == "cpu" else torch.float16
+            x_dev = x.to(compute_dtype)
+            gate = F.silu(F.linear(x_dev, self.gate_w.to(compute_dtype)))
+            up = F.linear(x_dev, self.up_w.to(compute_dtype))
+            return F.linear(gate * up, self.down_w.to(compute_dtype))
 
         if x.device.type != "cpu":
             compute_dtype = torch.float16
@@ -454,7 +493,7 @@ def load_hybrid_paged_qwen(
     model_path: str | Path,
     *,
     device: str = "mps",
-    max_experts_in_memory: int = 4,
+    max_experts_in_memory: int = 64,
     max_warm_cache: int = 256,
     packed_experts_dir: Optional[str] = None,
 ):
@@ -666,7 +705,7 @@ class ExpertPageManager:
         device: str | torch.device = "mps",
         *,
         n_experts: int,
-        max_experts_in_memory: int = 4,
+        max_experts_in_memory: int = 64,
         max_warm_cache: int = 256,
         packed_experts_dir: Optional[str] = None,
     ) -> None:
@@ -678,12 +717,12 @@ class ExpertPageManager:
         self._debug = bool(os.environ.get("OUTLIER_CACHE_DEBUG"))
         self._forward_passes = 0
 
-        self._lru_cache: OrderedDict[Tuple[int, int], _ExpertWeights] = OrderedDict()
+        self._hot_cache: OrderedDict[Tuple[int, int], _ExpertWeights] = OrderedDict()
         self._cpu_cache: OrderedDict[Tuple[int, int], _ExpertWeights] = OrderedDict()
-        self._device_hits = 0
+        self._hot_hits = 0
         self._warm_hits = 0
-        self._cache_misses = 0
-        self._cache_evictions = 0
+        self._cold_misses = 0
+        self._hot_evictions = 0
         self._disk_loads = 0
         self._disk_load_s = 0.0
         self._tensor_shard_index: Dict[str, str] = {}
@@ -702,7 +741,7 @@ class ExpertPageManager:
         self._forward_passes += 1
         tag = label or f"forward_{self._forward_passes}"
         self._debug_log(
-            f"{tag}: device_cache={len(self._lru_cache)}/{self.max_experts_in_memory} "
+            f"{tag}: hot_cache={len(self._hot_cache)}/{self.max_experts_in_memory} "
             f"warm_cache={len(self._cpu_cache)}/{self.max_warm_cache}"
         )
 
@@ -746,18 +785,11 @@ class ExpertPageManager:
         on_cpu = self.device.type == "cpu"
         self._debug_log(f"lookup key={key}")
 
-        if key in self._lru_cache:
-            self._lru_cache.move_to_end(key)
-            self._device_hits += 1
-            self._debug_log(f"hit level=device key={key}")
-            return self._lru_cache[key]
-
-        if len(self._lru_cache) >= self.max_experts_in_memory:
-            evicted_key, evicted_w = self._lru_cache.popitem(last=False)
-            self._cache_evictions += 1
-            cached_w = evicted_w.cpu() if on_cpu else evicted_w.cpu().pack_tq10()
-            self._add_to_warm_cache(evicted_key, cached_w)
-            self._debug_log(f"evict key={evicted_key}")
+        if key in self._hot_cache:
+            self._hot_cache.move_to_end(key)
+            self._hot_hits += 1
+            self._debug_log(f"hit level=hot key={key}")
+            return self._hot_cache[key]
 
         if key in self._cpu_cache:
             self._cpu_cache.move_to_end(key)
@@ -765,7 +797,7 @@ class ExpertPageManager:
             self._warm_hits += 1
             self._debug_log(f"hit level=warm key={key}")
         else:
-            self._cache_misses += 1
+            self._cold_misses += 1
             self._debug_log(f"miss key={key}")
             start = time.perf_counter()
             weights_int8 = self._load_expert_from_disk(layer_idx, expert_idx)
@@ -774,9 +806,14 @@ class ExpertPageManager:
             weights_cached = weights_int8 if on_cpu else weights_int8.pack_tq10()
             self._add_to_warm_cache(key, weights_cached)
 
-        weights_dev = weights_cached if on_cpu else weights_cached.unpack_to_int8().to(self.device)
-        self._lru_cache[key] = weights_dev
-        return weights_dev
+        if len(self._hot_cache) >= self.max_experts_in_memory:
+            evicted_key, _ = self._hot_cache.popitem(last=False)
+            self._hot_evictions += 1
+            self._debug_log(f"evict hot key={evicted_key}")
+
+        weights_hot = weights_cached.hot_ready(self.device)
+        self._hot_cache[key] = weights_hot
+        return weights_hot
 
     def _load_expert_from_packed(self, layer_idx: int, expert_idx: int) -> Optional[_ExpertWeights]:
         if not self._packed_index or self._packed_experts_dir is None:
@@ -848,20 +885,28 @@ class ExpertPageManager:
         )
 
     def cache_stats(self) -> Dict[str, float]:
-        total_hits = self._device_hits + self._warm_hits
-        total = total_hits + self._cache_misses
+        total_hits = self._hot_hits + self._warm_hits
+        total = total_hits + self._cold_misses
         hit_rate = total_hits / total if total > 0 else 0.0
+        hot_cache_bytes = sum(weights.nbytes() for weights in self._hot_cache.values())
+        warm_cache_bytes = sum(weights.nbytes() for weights in self._cpu_cache.values())
         return {
             "hits": total_hits,
-            "device_hits": self._device_hits,
+            "hot_hits": self._hot_hits,
             "warm_hits": self._warm_hits,
-            "misses": self._cache_misses,
+            "cold_misses": self._cold_misses,
+            "misses": self._cold_misses,
             "lookups": total,
             "hit_rate": hit_rate,
-            "evictions": self._cache_evictions,
+            "hot_evictions": self._hot_evictions,
+            "evictions": self._hot_evictions,
             "disk_loads": self._disk_loads,
             "disk_load_s": self._disk_load_s,
             "avg_disk_load_ms": (self._disk_load_s * 1000.0 / self._disk_loads) if self._disk_loads else 0.0,
+            "hot_cache_entries": len(self._hot_cache),
+            "hot_cache_mb": hot_cache_bytes / 1024**2,
+            "warm_cache_entries": len(self._cpu_cache),
+            "warm_cache_mb": warm_cache_bytes / 1024**2,
         }
 
 

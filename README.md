@@ -39,14 +39,20 @@ All benchmarks: lm-evaluation-harness v0.4.9.1, N=570, 5-shot, bf16.
 
 Paged mode is experimental today.
 
+- Three-tier cache:
+  - Hot: dequantized expert weights ready for matmul
+  - Warm: packed TQ1_0 expert bytes in RAM
+  - Cold: packed expert files on disk
 - Measured on Apple M1 Ultra (MPS) with `Outlier-Ai/Outlier-10B`
 - Prompt: `"Hello"`
-- Token 1 latency: `49.54s`
-- Tokens 2-5 average latency: `12.93s`
-- Peak RSS during the run: `7.11 GB`
-- Cache hit rate after token 1: `99.6%`
+- Token 1 latency: `50.14s`
+- Tokens 2-5 average latency: `8.07s`
+- Peak RSS during the run: `6.77 GB`
+- Hot hit rate after token 1: `77.7%`
+- Warm hit rate after token 1: `21.9%`
+- Cold miss rate after token 1: `0.4%`
 
-Current takeaway: cache warming is now working, but paged mode is still too slow for a polished demo path. It is useful as a low-memory experimental backend, not the default fast path.
+Current takeaway: the hot cache materially improved paged reuse and cut token 2-5 latency, but paged mode is still experimental and slower than the standard non-paged path.
 
 ## Commands
 

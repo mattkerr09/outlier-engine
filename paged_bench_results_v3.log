@@ -1,0 +1,28 @@
+model=Outlier-Ai/Outlier-10B
+device=mps
+prompt='Hello'
+target_new_tokens=5
+loading paged model...
+Fetching 34 files:   0%|          | 0/34 [00:00<?, ?it/s]Fetching 34 files: 100%|██████████| 34/34 [00:00<00:00, 42066.77it/s]
+You are using a model of type `outlier_moe` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+backend=hf
+prompt_tokens=30
+load_time_s=6.18
+peak_rss_gb_after_load=1.79
+starting token benchmark...
+token_1: latency_s=50.14 text='0' hot_hits=0 warm_hits=0 cold_misses=115 lookups=115 hit_rate=0.0% hot_cache_entries=64 hot_cache_mb=24864.0 peak_rss_gb=6.63
+token_2: latency_s=14.27 text='0' hot_hits=6 warm_hits=49 cold_misses=116 lookups=171 hit_rate=32.2% hot_cache_entries=64 hot_cache_mb=24864.0 peak_rss_gb=6.77
+token_3: latency_s=5.87 text='0' hot_hits=62 warm_hits=49 cold_misses=116 lookups=227 hit_rate=48.9% hot_cache_entries=64 hot_cache_mb=24864.0 peak_rss_gb=6.77
+token_4: latency_s=6.00 text='0' hot_hits=118 warm_hits=49 cold_misses=116 lookups=283 hit_rate=59.0% hot_cache_entries=64 hot_cache_mb=24864.0 peak_rss_gb=6.77
+token_5: latency_s=6.16 text='0' hot_hits=174 warm_hits=49 cold_misses=116 lookups=339 hit_rate=65.8% hot_cache_entries=64 hot_cache_mb=24864.0 peak_rss_gb=6.77
+summary
+token_1_latency_s=50.14
+token_2_to_5_avg_latency_s=8.07
+hot_hit_rate_after_token_1=77.7%
+warm_hit_rate_after_token_1=21.9%
+cold_miss_rate_after_token_1=0.4%
+hot_cache_entries=64
+hot_cache_mb=24864.0
+final_cache_stats={'hits': 223, 'hot_hits': 174, 'warm_hits': 49, 'cold_misses': 116, 'misses': 116, 'lookups': 339, 'hit_rate': 0.6578171091445427, 'hot_evictions': 101, 'evictions': 101, 'disk_loads': 116, 'disk_load_s': 16.920200874996226, 'avg_disk_load_ms': 145.8638006465192, 'hot_cache_entries': 64, 'hot_cache_mb': 24864.000366210938, 'warm_cache_entries': 116, 'warm_cache_mb': 4506.600929260254}
+peak_rss_gb=6.77
+generated_text='00000'
