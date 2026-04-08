@@ -573,11 +573,12 @@ def train_single_expert(
     output_dir: Path,
     steps_per_expert: int,
     device: torch.device,
+    lr: float,
 ) -> dict:
     model, expert = make_target_model(model, spec.layer_idx, device=device)
     target_mlp = model.model.layers[spec.layer_idx].mlp
     assert isinstance(target_mlp, SingleActiveExpertMLP)
-    optimizer = torch.optim.AdamW(expert.parameters(), lr=1e-4, weight_decay=0.01)
+    optimizer = torch.optim.AdamW(expert.parameters(), lr=lr, weight_decay=0.01)
     start = time.perf_counter()
     last_loss = 0.0
     last_stats: dict = {}
@@ -612,7 +613,7 @@ def train_single_expert(
             log(
                 f"[expert {spec.global_idx:03d} | layer {spec.layer_idx:02d} expert {spec.expert_idx}] "
                 f"step {step_idx:03d}/{steps_per_expert} "
-                f"loss={last_loss:.4f} lr=1.0e-4 sparsity={last_stats['delta_sparsity']:.3f} peak_memory={peak_memory:.2f}GB"
+                f"loss={last_loss:.4f} lr={lr:.1e} sparsity={last_stats['delta_sparsity']:.3f} peak_memory={peak_memory:.2f}GB"
             )
         append_jsonl(
             TRAINING_LOG_PATH,
@@ -880,9 +881,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-ref", default=DEFAULT_MODEL_REF)
     parser.add_argument("--corpus-dir", default=str(DEFAULT_CORPUS_DIR))
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
+    parser.add_argument("--checkpoint-dir", dest="output_dir", help="Alias for --output-dir.")
     parser.add_argument("--device", default="mps")
     parser.add_argument("--steps-per-expert", type=int, default=EXPERT_STEPS)
     parser.add_argument("--router-steps", type=int, default=ROUTER_STEPS)
+    parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--max-experts", type=int, default=None, help="Limit expert count for smoke runs.")
     parser.add_argument("--start-layer", type=int, default=None, help="Inclusive start layer for subset training.")
     parser.add_argument("--end-layer", type=int, default=None, help="Inclusive end layer for subset training.")
@@ -935,6 +938,7 @@ def main() -> None:
             output_dir=output_dir,
             steps_per_expert=args.steps_per_expert,
             device=device,
+            lr=args.lr,
         )
         summaries.append(summary)
         if idx == 1 and len(specs) > 1:
@@ -953,6 +957,7 @@ def main() -> None:
                 "experts_target": len(specs),
                 "experts_trained": len(summaries),
                 "steps_per_expert": args.steps_per_expert,
+                "lr": args.lr,
                 "elapsed_min": (time.perf_counter() - start) / 60.0,
                 "last_expert": summary,
                 "avg_final_loss": sum(item["final_loss"] for item in summaries) / len(summaries),
@@ -994,6 +999,7 @@ def main() -> None:
         "experts_trained": len(summaries),
         "experts_target": len(specs),
         "steps_per_expert": args.steps_per_expert,
+        "lr": args.lr,
         "router_summary": router_summary,
         "checkpoint_size_bytes": checkpoint_size,
         "checkpoint_size_gb": checkpoint_size / 1024**3,
