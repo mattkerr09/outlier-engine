@@ -7,8 +7,15 @@ Inference engine for [Outlier](https://outlier.host) ternary-quantized Mixture-o
 ## Quick start
 
 ```bash
-pip install outlier-engine
-outlier-engine run Outlier-Ai/Outlier-10B "The capital of France is" --max-tokens 20
+git clone https://github.com/mattkerr09/outlier-engine
+cd outlier-engine
+python -m venv .venv && source .venv/bin/activate
+pip install -e .
+
+outlier-engine run "Hello" --max-tokens 20
+outlier-engine demo
+outlier-engine bench
+outlier-engine info
 ```
 
 Tokens stream to your terminal as they're generated. On Apple Silicon, the engine automatically uses the GPU.
