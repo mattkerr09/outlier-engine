@@ -1,0 +1,44 @@
+======================================================================
+MONOLITH BENCHMARK: Individual Files vs Single-File Expert Store
+======================================================================
+Monolith already exists: /Users/matthewkerr/outlier-engine/experiments/monolith/experts.bin
+
+  Individual files: 1344
+  Individual total size: 8702.4 MiB
+  Monolith size: 8702.8 MiB
+  Overhead: 0.36 MiB (0.00%)
+
+  Note: file cache effects may influence results.
+  Running warmup pass first...
+
+----------------------------------------------------------------------
+RANDOM ACCESS (100 samples)
+----------------------------------------------------------------------
+  Iter 1: individual=11.551ms, monolith=6.229ms, speedup=1.85x
+  Iter 2: individual=10.588ms, monolith=6.123ms, speedup=1.73x
+  Iter 3: individual=10.520ms, monolith=6.134ms, speedup=1.71x
+
+  Best individual avg: 10.520 ms/expert
+  Best monolith avg:   6.123 ms/expert
+  Speedup: 1.72x
+
+----------------------------------------------------------------------
+SEQUENTIAL LAYER ACCESS (layers 8-12, 240 file opens vs 5 reads)
+----------------------------------------------------------------------
+  Iter 1: individual=44.8ms/layer, monolith=55.1ms/layer, speedup=0.81x
+  Iter 2: individual=40.0ms/layer, monolith=56.7ms/layer, speedup=0.71x
+  Iter 3: individual=41.3ms/layer, monolith=56.6ms/layer, speedup=0.73x
+
+  Best individual avg: 40.0 ms/layer
+  Best monolith avg:   55.1 ms/layer
+  Speedup: 0.73x
+
+======================================================================
+SUMMARY
+======================================================================
+  Random access speedup:     1.72x
+  Sequential layer speedup:  0.73x
+  Individual files:          1344
+  Individual total:          8702.4 MiB
+  Monolith size:             8702.8 MiB
+  Overhead:                  0.36 MiB (0.004%)
