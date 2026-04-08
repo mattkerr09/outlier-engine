@@ -1,0 +1,9 @@
+device=mps
+dtype=torch.float16
+module=SimpleMLP(gate+up+silu+down)
+eager_ms=0.702
+torch_compile_ms=0.716
+torch_jit_trace_ms=0.652
+compile_speedup_vs_eager=0.980
+trace_speedup_vs_eager=1.077
+result=at_least_one_compilation_strategy_worked
