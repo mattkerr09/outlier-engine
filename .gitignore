@@ -12,3 +12,6 @@ mps_*.log
 paged_*.log
 repack_*.log
 packed_experts/
+checkpoints/**/*.safetensors
+checkpoints/**/*.pt
+data/distillation/training_log.jsonl

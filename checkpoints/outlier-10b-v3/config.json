@@ -1,0 +1,9 @@
+{
+  "model_type": "outlier_moe",
+  "architectures": [
+    "Qwen2ForCausalLM"
+  ],
+  "base_model": "Outlier-Ai/Outlier-10B",
+  "pipeline": "sequential_cakld_v3",
+  "notes": "Template config for the sequential expert-distilled V3 checkpoint. Weight shards are generated locally by scripts/train_v3_experts.py and are ignored by git."
+}
