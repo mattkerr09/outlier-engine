@@ -25,13 +25,14 @@ def test_cli_parses_prompt_only_run_command():
 
 def test_bench_command_parses_args():
     parser = build_parser()
-    args = parser.parse_args(["bench", "Outlier-Ai/Outlier-10B", "--device", "mps", "--prefetch"])
+    args = parser.parse_args(["bench", "Outlier-Ai/Outlier-10B", "--device", "mps", "--prefetch", "--et-routing"])
 
     assert args.command == "bench"
     assert args.model == "Outlier-Ai/Outlier-10B"
     assert args.device == "mps"
     assert args.max_tokens == 20
     assert args.prefetch is True
+    assert args.et_routing is True
 
 
 def test_demo_command_parses_args():

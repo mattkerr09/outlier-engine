@@ -170,6 +170,7 @@ def load_model(
     device: Optional[str] = None,
     paged: Optional[bool] = None,
     prefetch: Optional[bool] = None,
+    et_routing: Optional[bool] = None,
     max_experts_in_memory: int = 64,
     max_warm_cache: int = 256,
     packed_experts_dir: Optional[str] = None,
@@ -261,6 +262,12 @@ def load_model(
         prefetch_enabled = os.environ.get("OUTLIER_PREFETCH", "").strip() == "1"
     if prefetch_enabled and paged and hasattr(model, "enable_expert_prefetch"):
         model.enable_expert_prefetch()
+
+    et_enabled = et_routing
+    if et_enabled is None:
+        et_enabled = os.environ.get("OUTLIER_ET_ROUTING", "").strip() == "1"
+    if et_enabled and paged and hasattr(model, "enable_et_routing"):
+        model.enable_et_routing()
 
     return LoadedOutlier(
         model_ref=resolved_ref,

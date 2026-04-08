@@ -125,6 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--paged", action="store_true")
     run_parser.add_argument("--full", action="store_true")
     run_parser.add_argument("--prefetch", action="store_true")
+    run_parser.add_argument("--et-routing", action="store_true", dest="et_routing")
     run_parser.add_argument("--max-experts", type=int, default=64, dest="max_experts")
     run_parser.add_argument("--max-warm-cache", type=int, default=256, dest="max_warm_cache")
     run_parser.add_argument("--verbose", action="store_true", help="Print token IDs and repr() chunks while generating.")
@@ -141,6 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
     bench_parser.add_argument("--paged", action="store_true")
     bench_parser.add_argument("--full", action="store_true")
     bench_parser.add_argument("--prefetch", action="store_true")
+    bench_parser.add_argument("--et-routing", action="store_true", dest="et_routing")
 
     demo_parser = subparsers.add_parser("demo", help="Run a three-prompt terminal demo.")
     demo_parser.add_argument("model", nargs="?", default=DEFAULT_MODEL)
@@ -152,6 +154,7 @@ def build_parser() -> argparse.ArgumentParser:
     demo_parser.add_argument("--paged", action="store_true")
     demo_parser.add_argument("--full", action="store_true")
     demo_parser.add_argument("--prefetch", action="store_true")
+    demo_parser.add_argument("--et-routing", action="store_true", dest="et_routing")
     demo_parser.add_argument("--max-experts", type=int, default=64, dest="max_experts")
     demo_parser.add_argument("--max-warm-cache", type=int, default=256, dest="max_warm_cache")
 
@@ -227,6 +230,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             device=args.device,
             paged=_resolve_paged_flag(args),
             prefetch=True if args.prefetch else None,
+            et_routing=True if args.et_routing else None,
             max_experts_in_memory=args.max_experts,
             max_warm_cache=args.max_warm_cache,
         )
@@ -255,6 +259,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             device=args.device,
             paged=_resolve_paged_flag(args),
             prefetch=True if args.prefetch else None,
+            et_routing=True if args.et_routing else None,
         )
         load_time = time.perf_counter() - load_t0
         results = [
@@ -291,6 +296,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             device=args.device,
             paged=_resolve_paged_flag(args),
             prefetch=True if args.prefetch else None,
+            et_routing=True if args.et_routing else None,
             max_experts_in_memory=args.max_experts,
             max_warm_cache=args.max_warm_cache,
         )

@@ -54,7 +54,7 @@ import re
 import threading
 import time
 import warnings
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from pathlib import Path
 from types import MethodType
 from typing import Dict, Optional, Tuple
@@ -66,6 +66,7 @@ import torch.nn.functional as F
 
 from .prefetch import ExpertPrefetcher
 from .routing_predictor import RoutingPredictor
+from .et_routing import ETRouter
 from .model import (
     _RMSNorm,
     _Attention,
@@ -692,6 +693,12 @@ def load_hybrid_paged_qwen(
         self._outlier_prefetch_hooks = handles
 
     model.enable_expert_prefetch = MethodType(_enable_expert_prefetch, model)
+
+    def _enable_et_routing(self) -> None:
+        self.outlier_page_manager.enable_et_routing()
+
+    model.enable_et_routing = MethodType(_enable_et_routing, model)
+    model.routing_stats = MethodType(lambda self: self.outlier_page_manager.et_routing_stats(), model)
     return model
 
 
@@ -726,6 +733,36 @@ def _run_single_token_experts_batched(x: torch.Tensor, experts: list[_ExpertWeig
     up = torch.matmul(up_w, x_vec.unsqueeze(-1)).squeeze(-1)
     hidden = F.silu(gate) * up
     return torch.matmul(down_w, hidden.unsqueeze(-1)).squeeze(-1)
+
+
+def _summarize_et_stats(routers: list[ETRouter] | None) -> Dict[str, object]:
+    if not routers:
+        return {
+            "et_routing_enabled": False,
+            "avg_experts_per_token": 0.0,
+            "total_tokens_routed": 0,
+            "expert_count_histogram": {},
+        }
+
+    total_tokens = 0
+    total_selected = 0.0
+    histogram: Counter[int] = Counter()
+    threshold_values: list[list[float]] = []
+    for router in routers:
+        stats = router.stats
+        tokens = int(stats["total_tokens_routed"])
+        total_tokens += tokens
+        total_selected += float(stats["avg_experts_per_token"]) * tokens
+        histogram.update(stats.get("expert_count_histogram", {}))
+        threshold_values.append(list(stats["threshold_values"]))
+    avg = total_selected / total_tokens if total_tokens else 0.0
+    return {
+        "et_routing_enabled": True,
+        "avg_experts_per_token": avg,
+        "total_tokens_routed": total_tokens,
+        "expert_count_histogram": dict(sorted(histogram.items())),
+        "threshold_values": threshold_values,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -776,10 +813,15 @@ class _HybridPagedMLP(nn.Module):
         x_flat = x.view(-1, hidden_dim)
         compute_dtype = x_flat.dtype if x_flat.device.type != "cpu" else torch.float32
         logits = F.linear(x_flat.to(compute_dtype), self.router_weight.to(compute_dtype))
-        probs = F.softmax(logits, dim=-1)
-        top_w, top_idx = torch.topk(probs, k=self.top_k, dim=-1)
-        top_w = top_w / top_w.sum(-1, keepdim=True)
-        used_expert_ids = [int(expert_id) for expert_id in torch.unique(top_idx).tolist()]
+        et_router = self.page_manager.get_et_router(self.layer_idx)
+        if et_router is not None:
+            selected_idx, selected_w = et_router.route(logits)
+        else:
+            probs = F.softmax(logits, dim=-1)
+            effective_top_k = min(self.top_k, probs.shape[-1])
+            selected_w, selected_idx = torch.topk(probs, k=effective_top_k, dim=-1)
+            selected_w = selected_w / selected_w.sum(-1, keepdim=True)
+        used_expert_ids = [int(expert_id) for expert_id in torch.unique(selected_idx[selected_idx >= 0]).tolist()]
         self.page_manager.record_layer_routing(self.layer_idx, logits.detach(), used_expert_ids)
 
         shared_out = self.shared(x_flat.to(compute_dtype))
@@ -789,16 +831,16 @@ class _HybridPagedMLP(nn.Module):
             experts = [self.page_manager.get_expert(self.layer_idx, int(expert_idx)) for expert_idx in used_expert_ids]
             batched_out = _run_single_token_experts_batched(x_flat, experts).to(shared_out.dtype)
             for row_idx, expert_idx in enumerate(used_expert_ids):
-                weight = (top_w[0] * (top_idx[0] == expert_idx).to(top_w.dtype)).sum()
+                weight = (selected_w[0] * (selected_idx[0] == expert_idx).to(selected_w.dtype)).sum()
                 expert_out[0] += weight * batched_out[row_idx]
             return (shared_out + expert_out).to(x.dtype).view(batch, seq_len, hidden_dim)
 
         for expert_idx in used_expert_ids:
-            assignment = top_idx == expert_idx
+            assignment = selected_idx == expert_idx
             token_mask = assignment.any(dim=-1)
             if not token_mask.any():
                 continue
-            weights = (top_w * assignment.to(top_w.dtype)).sum(dim=-1, keepdim=True)
+            weights = (selected_w * assignment.to(selected_w.dtype)).sum(dim=-1, keepdim=True)
             expert = self.page_manager.get_expert(self.layer_idx, int(expert_idx))
             out = _run_expert(x_flat[token_mask], expert).to(shared_out.dtype)
             expert_out[token_mask] += weights[token_mask] * out
@@ -848,6 +890,7 @@ class ExpertPageManager:
         self._routing_predictor: RoutingPredictor | None = None
         self._last_routed_layer: int | None = None
         self._last_routed_experts: list[int] = []
+        self._et_routers: list[ETRouter] | None = None
 
         self._build_shard_index()
         self._load_packed_index()
@@ -912,6 +955,27 @@ class ExpertPageManager:
             self._routing_predictor = RoutingPredictor()
             self._last_routed_layer = None
             self._last_routed_experts = []
+
+    def enable_et_routing(self) -> None:
+        if self._et_routers is None:
+            self._et_routers = [
+                ETRouter(
+                    n_experts=self.n_experts,
+                    top_k_fallback=self.top_k,
+                    min_experts=1,
+                    max_experts=min(4, self.n_experts),
+                )
+                for _ in range(self.n_layers)
+            ]
+
+    def get_et_router(self, layer_idx: int) -> ETRouter | None:
+        routers = getattr(self, "_et_routers", None)
+        if routers is None or layer_idx >= len(routers):
+            return None
+        return routers[layer_idx]
+
+    def et_routing_stats(self) -> Dict[str, object]:
+        return _summarize_et_stats(getattr(self, "_et_routers", None))
 
     def wait_for_layer(self, layer_idx: int) -> None:
         prefetcher = getattr(self, "_prefetcher", None)
@@ -1139,6 +1203,7 @@ class ExpertPageManager:
             "warm_cache_mb": warm_cache_bytes / 1024**2,
         }
         stats.update(self.prefetch_stats())
+        stats.update(self.et_routing_stats())
         return stats
 
 
@@ -1356,6 +1421,7 @@ class OutlierPagedModel(nn.Module):
         self._routing_predictor: RoutingPredictor | None = None
         self._last_routed_layer: int | None = None
         self._last_routed_experts: list[int] = []
+        self._et_routers: list[ETRouter] | None = None
 
     # ------------------------------------------------------------------
     # Async prefetch integration
@@ -1367,6 +1433,21 @@ class OutlierPagedModel(nn.Module):
             self._routing_predictor = RoutingPredictor()
             self._last_routed_layer = None
             self._last_routed_experts = []
+
+    def enable_et_routing(self) -> None:
+        if self._et_routers is None:
+            self._et_routers = [
+                ETRouter(
+                    n_experts=self.n_experts,
+                    top_k_fallback=self.top_k,
+                    min_experts=1,
+                    max_experts=min(4, self.n_experts),
+                )
+                for _ in range(self.n_layers)
+            ]
+
+    def routing_stats(self) -> Dict[str, object]:
+        return _summarize_et_stats(getattr(self, "_et_routers", None))
 
     def enable_async_prefetch(self, max_prefetch_ahead: int = 2) -> None:
         del max_prefetch_ahead
@@ -1793,10 +1874,15 @@ class OutlierPagedModel(nn.Module):
 
                 # Router: softmax → top-k (accurate, on post-attention x)
                 logits = F.linear(h_flat.float(), ffn.router_weight.float())
-                probs  = F.softmax(logits, dim=-1)
-                top_w, top_idx = torch.topk(probs, k=self.top_k, dim=-1)
-                top_w = top_w / top_w.sum(-1, keepdim=True)
-                used_expert_ids = [int(expert_id) for expert_id in torch.unique(top_idx).tolist()]
+                et_router = None if self._et_routers is None else self._et_routers[i]
+                if et_router is not None:
+                    selected_idx, selected_w = et_router.route(logits)
+                else:
+                    probs  = F.softmax(logits, dim=-1)
+                    effective_top_k = min(self.top_k, probs.shape[-1])
+                    selected_w, selected_idx = torch.topk(probs, k=effective_top_k, dim=-1)
+                    selected_w = selected_w / selected_w.sum(-1, keepdim=True)
+                used_expert_ids = [int(expert_id) for expert_id in torch.unique(selected_idx[selected_idx >= 0]).tolist()]
                 self._record_layer_routing(i, logits.detach(), used_expert_ids)
 
                 # Shared expert (always device-resident, INT8 quantised)
@@ -1807,11 +1893,11 @@ class OutlierPagedModel(nn.Module):
                     N, D, device=self.device, dtype=torch.float32
                 )
                 for e in used_expert_ids:
-                    assignment = (top_idx == e)
+                    assignment = (selected_idx == e)
                     token_mask = assignment.any(dim=-1)
                     if not token_mask.any():
                         continue
-                    weights = (top_w * assignment.to(top_w.dtype)).sum(dim=-1, keepdim=True)
+                    weights = (selected_w * assignment.to(selected_w.dtype)).sum(dim=-1, keepdim=True)
                     w = self.load_expert(i, int(e))
                     out = _run_expert(h_flat[token_mask], w)
                     expert_out[token_mask] += weights[token_mask] * out
@@ -1899,4 +1985,5 @@ class OutlierPagedModel(nn.Module):
         }
         if self._expert_prefetcher is not None:
             stats.update(self._expert_prefetcher.prefetch_stats)
+        stats.update(self.routing_stats())
         return stats

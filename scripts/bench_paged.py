@@ -54,6 +54,8 @@ def _format_cache(stats: dict[str, Any] | None) -> str:
     )
     if "prefetch_accuracy" in stats:
         summary += f" prefetch_accuracy={stats.get('prefetch_accuracy', 0.0):.1%}"
+    if stats.get("et_routing_enabled"):
+        summary += f" avg_experts_per_token={stats.get('avg_experts_per_token', 0.0):.2f}"
     return summary
 
 
@@ -64,6 +66,7 @@ def main() -> int:
     parser.add_argument("--tokens", type=int, default=5)
     parser.add_argument("--device", default=_default_device())
     parser.add_argument("--prefetch", action="store_true")
+    parser.add_argument("--et-routing", action="store_true", dest="et_routing")
     args = parser.parse_args()
 
     print(f"model={args.model}")
@@ -78,6 +81,7 @@ def main() -> int:
         paged=True,
         device=args.device,
         prefetch=True if args.prefetch else None,
+        et_routing=True if args.et_routing else None,
     )
     _sync(args.device)
     load_s = time.perf_counter() - load_t0
@@ -176,6 +180,9 @@ def main() -> int:
         print(f"prefetches_issued={int(final_stats.get('prefetches_issued', 0))}")
         print(f"prefetch_hits={int(final_stats.get('prefetch_hits', 0))}")
         print(f"prefetch_wastes={int(final_stats.get('prefetch_wastes', 0))}")
+    if final_stats.get("et_routing_enabled"):
+        print(f"avg_experts_per_token={final_stats.get('avg_experts_per_token', 0.0):.2f}")
+        print(f"expert_count_histogram={final_stats.get('expert_count_histogram', {})}")
     print(f"hot_cache_entries={final_stats.get('hot_cache_entries', 0)}")
     print(f"hot_cache_mb={final_stats.get('hot_cache_mb', 0.0):.1f}")
     print(f"final_cache_stats={final_stats}")
