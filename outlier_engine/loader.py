@@ -12,7 +12,7 @@ import torch
 from huggingface_hub import HfApi, hf_hub_download, snapshot_download
 
 from .model import OutlierForCausalLM
-from .paging import OutlierPagedModel, _default_packed_dir
+from .paging import OutlierPagedModel, _default_packed_dir, load_hybrid_paged_qwen
 from .tokenizer import OutlierTokenizer, load_tokenizer
 
 _LEGACY_MODEL_ALIASES = {
@@ -191,7 +191,7 @@ def load_model(
         try:
             selected_device = candidate
             if paged:
-                backend = "paged"
+                backend = "hf"
                 packed_dir = None
                 if packed_experts_dir:
                     packed_dir = packed_experts_dir
@@ -205,13 +205,24 @@ def load_model(
                             f"Run `outlier-engine repack {model_ref}` first for faster paged loads.",
                             stacklevel=2,
                         )
-                model = OutlierPagedModel(
-                    str(model_dir),
-                    device=candidate,
-                    max_experts_in_memory=max_experts_in_memory,
-                    max_warm_cache=max_warm_cache,
-                    packed_experts_dir=packed_dir,
-                )
+                try:
+                    model = load_hybrid_paged_qwen(
+                        str(model_dir),
+                        device=candidate,
+                        max_experts_in_memory=max_experts_in_memory,
+                        max_warm_cache=max_warm_cache,
+                        packed_experts_dir=packed_dir,
+                    )
+                except Exception as hybrid_exc:
+                    warnings.warn(f"Hybrid paged loader failed, falling back to legacy paged runtime: {hybrid_exc}")
+                    backend = "paged"
+                    model = OutlierPagedModel(
+                        str(model_dir),
+                        device=candidate,
+                        max_experts_in_memory=max_experts_in_memory,
+                        max_warm_cache=max_warm_cache,
+                        packed_experts_dir=packed_dir,
+                    )
             else:
                 if config.get("model_type") == "outlier_moe":
                     backend = "custom"

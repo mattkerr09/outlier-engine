@@ -71,7 +71,7 @@ def dequant_int8_matmul(
     weight_int8: (out_features, in_features)   int8
     scale:       scalar or [out_features, 1] float
 
-    Returns: (batch, out_features)  float32
+    Returns: (batch, out_features) in the active compute dtype
     """
     out_features, in_features = weight_int8.shape
     batch = x.shape[0]
@@ -88,4 +88,4 @@ def dequant_int8_matmul(
         result += x_f[:, start:end] @ w_chunk.T
         del w_chunk
 
-    return result.float()
+    return result

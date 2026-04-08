@@ -54,6 +54,7 @@ import time
 import warnings
 from collections import OrderedDict
 from pathlib import Path
+from types import MethodType
 from typing import Dict, Optional, Tuple
 
 import numpy as np
@@ -323,7 +324,7 @@ class _ExpertWeights:
         and never materialise a full float copy of the weight matrix.
 
         x: (batch, hidden_dim)   any float dtype
-        Returns: (batch, hidden_dim)   float32
+        Returns: (batch, hidden_dim) in the active compute dtype
         """
         if self.packed:
             unpacked = self.unpack_to_int8()
@@ -337,7 +338,7 @@ class _ExpertWeights:
             down_w = self.down_w.to(compute_dtype) * self.down_s.to(compute_dtype)
             gate = F.silu(F.linear(x_dev, gate_w))
             up = F.linear(x_dev, up_w)
-            return F.linear(gate * up, down_w).float()
+            return F.linear(gate * up, down_w)
 
         from .ternary_ops import ternary_matmul_direct
         gate = F.silu(ternary_matmul_direct(x, self.gate_w, self.gate_s))
@@ -448,6 +449,140 @@ def repack_ternary_experts(
     return meta
 
 
+def load_hybrid_paged_qwen(
+    model_path: str | Path,
+    *,
+    device: str = "mps",
+    max_experts_in_memory: int = 4,
+    max_warm_cache: int = 16,
+    packed_experts_dir: Optional[str] = None,
+):
+    """Build a native Qwen2 model and swap only the MLP path for paged MoE."""
+    from transformers import Qwen2Config, Qwen2ForCausalLM
+
+    model_dir = Path(model_path)
+    with open(model_dir / "config.json") as f:
+        cfg = _normalize_config(json.load(f))
+
+    hf_cfg = Qwen2Config(
+        vocab_size=cfg["vocab_size"],
+        hidden_size=cfg["hidden_dim"],
+        intermediate_size=cfg["intermediate_dim"],
+        num_hidden_layers=cfg["n_layers"],
+        num_attention_heads=cfg["n_heads"],
+        num_key_value_heads=cfg.get("n_kv_heads", cfg["n_heads"]),
+        hidden_act="silu",
+        max_position_embeddings=cfg.get("max_seq_len", 32768),
+        rms_norm_eps=cfg.get("rms_norm_eps", 1e-6),
+        use_cache=True,
+        tie_word_embeddings=cfg.get("tie_word_embeddings", False),
+        rope_parameters=cfg.get("rope_parameters", {"rope_theta": cfg.get("rope_theta", 1000000.0), "rope_type": "default"}),
+        use_sliding_window=cfg.get("use_sliding_window", False),
+        sliding_window=cfg.get("sliding_window"),
+        max_window_layers=cfg.get("max_window_layers", cfg["n_layers"]),
+        layer_types=cfg.get("layer_types"),
+        attention_dropout=cfg.get("attention_dropout", 0.0),
+        bos_token_id=cfg.get("bos_token_id"),
+        eos_token_id=cfg.get("eos_token_id"),
+        pad_token_id=cfg.get("pad_token_id"),
+    )
+
+    with torch.device("meta"):
+        model = Qwen2ForCausalLM(hf_cfg)
+        for layer_idx, layer in enumerate(model.model.layers):
+            layer.mlp = _HybridPagedMLP(
+                cfg["hidden_dim"],
+                cfg["intermediate_dim"],
+                cfg.get("n_experts", 0),
+                cfg.get("top_k", 2),
+                layer_idx=layer_idx,
+                page_manager=None,
+            )
+
+    model = model.to_empty(device=torch.device(device))
+    model = model.to(dtype=torch.float16)
+
+    page_manager = ExpertPageManager(
+        model_dir,
+        device=device,
+        n_experts=cfg.get("n_experts", 0),
+        max_experts_in_memory=max_experts_in_memory,
+        max_warm_cache=max_warm_cache,
+        packed_experts_dir=packed_experts_dir,
+    )
+
+    for layer in model.model.layers:
+        if isinstance(layer.mlp, _HybridPagedMLP):
+            layer.mlp.page_manager = page_manager
+
+    from safetensors import safe_open
+    from .quantize_utils import quantize_to_int8
+
+    for shard in sorted(model_dir.glob("*.safetensors")):
+        with safe_open(str(shard), framework="pt", device="cpu") as f:
+            for raw_key in f.keys():
+                if raw_key.startswith("base.model.layers.") and ".mlp.experts." in raw_key:
+                    continue
+                tensor = f.get_tensor(raw_key)
+                if raw_key.startswith("base.model."):
+                    key = raw_key[len("base."):]
+                elif raw_key.startswith("base."):
+                    key = raw_key[len("base."):]
+                else:
+                    key = raw_key
+
+                if key == "model.embed_tokens.weight":
+                    model.model.embed_tokens.weight.data.copy_(tensor.to(model.model.embed_tokens.weight.dtype))
+                    continue
+                if key == "model.norm.weight":
+                    model.model.norm.weight.data.copy_(tensor.to(model.model.norm.weight.dtype))
+                    continue
+                if key == "lm_head.weight":
+                    model.lm_head.weight.data.copy_(tensor.to(model.lm_head.weight.dtype))
+                    continue
+
+                layer_match = re.match(r"^model\.layers\.(\d+)\.(.+)$", key)
+                if not layer_match:
+                    continue
+                layer_idx = int(layer_match.group(1))
+                suffix = layer_match.group(2)
+                layer = model.model.layers[layer_idx]
+
+                if suffix == "input_layernorm.weight":
+                    layer.input_layernorm.weight.data.copy_(tensor.to(layer.input_layernorm.weight.dtype))
+                elif suffix == "post_attention_layernorm.weight":
+                    layer.post_attention_layernorm.weight.data.copy_(tensor.to(layer.post_attention_layernorm.weight.dtype))
+                elif suffix.startswith("self_attn."):
+                    proj_name, param_name = suffix[len("self_attn."):].rsplit(".", 1)
+                    module = getattr(layer.self_attn, proj_name, None)
+                    target = getattr(module, param_name, None) if module is not None else None
+                    if target is not None:
+                        target.data.copy_(tensor.to(target.dtype))
+                elif suffix == "mlp.router.weight" and isinstance(layer.mlp, _HybridPagedMLP):
+                    layer.mlp.router_weight.data.copy_(tensor.to(layer.mlp.router_weight.dtype))
+                elif suffix.startswith("mlp.shared_expert.") and isinstance(layer.mlp, _HybridPagedMLP):
+                    shared = layer.mlp.shared
+                    proj = suffix[len("mlp.shared_expert."):]
+                    if proj == "gate_W":
+                        q, s = quantize_to_int8(tensor)
+                        shared.gate_w.copy_(q)
+                        shared.gate_s.copy_(s.to(shared.gate_s.dtype))
+                    elif proj == "up_W":
+                        q, s = quantize_to_int8(tensor)
+                        shared.up_w.copy_(q)
+                        shared.up_s.copy_(s.to(shared.up_s.dtype))
+                    elif proj == "down_W":
+                        q, s = quantize_to_int8(tensor)
+                        shared.down_w.copy_(q)
+                        shared.down_s.copy_(s.to(shared.down_s.dtype))
+
+    model.eval()
+    model.outlier_device = torch.device(device)
+    model.outlier_page_manager = page_manager
+    model.cache_stats = MethodType(lambda self: self.outlier_page_manager.cache_stats(), model)
+    return model
+
+
 def _run_expert(x: torch.Tensor, w: _ExpertWeights) -> torch.Tensor:
     """Run ternary expert via chunked matmul. Returns float32."""
     return w.run(x)
@@ -469,6 +604,241 @@ class _PagedMoEFFN(nn.Module):
             torch.empty(n_experts, hidden_dim), requires_grad=False
         )
         self.shared = _Int8SwiGLU(hidden_dim, intermediate_dim)
+
+
+class _HybridPagedMLP(nn.Module):
+    """Drop-in replacement for HF Qwen2 MLP that pages ternary experts."""
+
+    def __init__(
+        self,
+        hidden_dim: int,
+        intermediate_dim: int,
+        n_experts: int,
+        top_k: int,
+        layer_idx: int,
+        page_manager: "ExpertPageManager | None" = None,
+    ) -> None:
+        super().__init__()
+        self.n_experts = n_experts
+        self.top_k = top_k
+        self.layer_idx = layer_idx
+        self.page_manager = page_manager
+        self.router_weight = nn.Parameter(
+            torch.empty(n_experts, hidden_dim), requires_grad=False
+        )
+        self.shared = _Int8SwiGLU(hidden_dim, intermediate_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.page_manager is None:
+            raise RuntimeError("Hybrid paged MLP has no page manager attached.")
+
+        batch, seq_len, hidden_dim = x.shape
+        x_flat = x.view(-1, hidden_dim)
+        compute_dtype = x_flat.dtype if x_flat.device.type != "cpu" else torch.float32
+        logits = F.linear(x_flat.to(compute_dtype), self.router_weight.to(compute_dtype))
+        probs = F.softmax(logits, dim=-1)
+        top_w, top_idx = torch.topk(probs, k=self.top_k, dim=-1)
+        top_w = top_w / top_w.sum(-1, keepdim=True)
+
+        shared_out = self.shared(x_flat.to(compute_dtype))
+        expert_out = torch.zeros_like(shared_out)
+
+        for expert_idx in torch.unique(top_idx).tolist():
+            assignment = top_idx == expert_idx
+            token_mask = assignment.any(dim=-1)
+            if not token_mask.any():
+                continue
+            weights = (top_w * assignment.to(top_w.dtype)).sum(dim=-1, keepdim=True)
+            expert = self.page_manager.get_expert(self.layer_idx, int(expert_idx))
+            out = _run_expert(x_flat[token_mask], expert).to(shared_out.dtype)
+            expert_out[token_mask] += weights[token_mask] * out
+
+        return (shared_out + expert_out).to(x.dtype).view(batch, seq_len, hidden_dim)
+
+
+class ExpertPageManager:
+    """Reusable expert pager for hybrid HF and legacy paged runtimes."""
+
+    def __init__(
+        self,
+        model_dir: str | Path,
+        device: str | torch.device = "mps",
+        *,
+        n_experts: int,
+        max_experts_in_memory: int = 4,
+        max_warm_cache: int = 16,
+        packed_experts_dir: Optional[str] = None,
+    ) -> None:
+        self.model_dir = Path(model_dir)
+        self.device = torch.device(device)
+        self.n_experts = n_experts
+        self.max_experts_in_memory = max_experts_in_memory
+        self.max_warm_cache = max_warm_cache
+
+        self._lru_cache: OrderedDict[Tuple[int, int], _ExpertWeights] = OrderedDict()
+        self._cpu_cache: OrderedDict[Tuple[int, int], _ExpertWeights] = OrderedDict()
+        self._cache_hits = 0
+        self._cache_misses = 0
+        self._cache_evictions = 0
+        self._disk_loads = 0
+        self._disk_load_s = 0.0
+        self._tensor_shard_index: Dict[str, str] = {}
+        self._packed_index: Dict[str, Dict[str, object]] = {}
+        self._packed_experts_dir = Path(packed_experts_dir).expanduser() if packed_experts_dir else None
+        self._fmt = "toy"
+
+        self._build_shard_index()
+        self._load_packed_index()
+
+    def _build_shard_index(self) -> None:
+        from safetensors import safe_open
+
+        toy_pat = re.compile(r"^layers\.\d+\.ffn\.experts\.\d+\.")
+        real_pat = re.compile(r"^base\.model\.layers\.\d+\.mlp\.experts\.\d+\.")
+        first_shard_keys: list[str] = []
+
+        for shard in sorted(self.model_dir.glob("*.safetensors")):
+            with safe_open(str(shard), framework="pt", device="cpu") as f:
+                keys = list(f.keys())
+                if not first_shard_keys:
+                    first_shard_keys = keys
+                for key in keys:
+                    if toy_pat.match(key) or real_pat.match(key):
+                        self._tensor_shard_index[key] = str(shard)
+
+        self._fmt = _detect_format(first_shard_keys)
+
+    def _load_packed_index(self) -> None:
+        if self._packed_experts_dir is None:
+            return
+        index_path = self._packed_experts_dir / "index.json"
+        if not index_path.exists():
+            return
+        self._packed_index = json.loads(index_path.read_text(encoding="utf-8"))
+
+    def _add_to_warm_cache(self, key: Tuple[int, int], weights: _ExpertWeights) -> None:
+        if key in self._cpu_cache:
+            self._cpu_cache.move_to_end(key)
+            self._cpu_cache[key] = weights
+            return
+        if len(self._cpu_cache) >= self.max_warm_cache:
+            self._cpu_cache.popitem(last=False)
+        self._cpu_cache[key] = weights
+
+    def get_expert(self, layer_idx: int, expert_idx: int) -> _ExpertWeights:
+        key = (layer_idx, expert_idx)
+        on_cpu = self.device.type == "cpu"
+
+        if key in self._lru_cache:
+            self._lru_cache.move_to_end(key)
+            self._cache_hits += 1
+            return self._lru_cache[key]
+
+        self._cache_misses += 1
+
+        if len(self._lru_cache) >= self.max_experts_in_memory:
+            evicted_key, evicted_w = self._lru_cache.popitem(last=False)
+            self._cache_evictions += 1
+            cached_w = evicted_w.cpu() if on_cpu else evicted_w.cpu().pack_tq10()
+            self._add_to_warm_cache(evicted_key, cached_w)
+
+        if key in self._cpu_cache:
+            self._cpu_cache.move_to_end(key)
+            weights_cached = self._cpu_cache[key]
+        else:
+            start = time.perf_counter()
+            weights_int8 = self._load_expert_from_disk(layer_idx, expert_idx)
+            self._disk_loads += 1
+            self._disk_load_s += time.perf_counter() - start
+            weights_cached = weights_int8 if on_cpu else weights_int8.pack_tq10()
+            self._add_to_warm_cache(key, weights_cached)
+
+        weights_dev = weights_cached if on_cpu else weights_cached.unpack_to_int8().to(self.device)
+        self._lru_cache[key] = weights_dev
+        return weights_dev
+
+    def _load_expert_from_packed(self, layer_idx: int, expert_idx: int) -> Optional[_ExpertWeights]:
+        if not self._packed_index or self._packed_experts_dir is None:
+            return None
+        prefix = f"base.model.layers.{layer_idx}.mlp.experts.{expert_idx}"
+        projs = {}
+        for proj in ("gate", "up", "down"):
+            ternary_key = f"{prefix}.{proj}_ternary"
+            scale_key = f"{prefix}.{proj}_scale"
+            ternary_info = self._packed_index.get(ternary_key)
+            scale_info = self._packed_index.get(scale_key)
+            if ternary_info is None or scale_info is None:
+                return None
+            ternary_path = self._packed_experts_dir / str(ternary_info["file"])
+            scale_path = self._packed_experts_dir / str(scale_info["file"])
+            packed = torch.from_numpy(np.fromfile(ternary_path, dtype=np.uint8).copy())
+            scale = torch.from_numpy(np.fromfile(scale_path, dtype=np.float16).copy()).reshape(scale_info["shape"])
+            projs[proj] = (unpack_ternary_tq10(packed, tuple(ternary_info["shape"])), scale)
+        return _ExpertWeights(
+            projs["gate"][0], projs["gate"][1],
+            projs["up"][0], projs["up"][1],
+            projs["down"][0], projs["down"][1],
+            packed=False,
+        )
+
+    def _load_expert_from_disk(self, layer_idx: int, expert_idx: int) -> _ExpertWeights:
+        packed = self._load_expert_from_packed(layer_idx, expert_idx)
+        if packed is not None:
+            return packed
+        from safetensors import safe_open
+
+        if self._fmt == "real":
+            prefix = f"base.model.layers.{layer_idx}.mlp.experts.{expert_idx}"
+            names = {
+                "gate_w": f"{prefix}.gate_ternary",
+                "gate_s": f"{prefix}.gate_scale",
+                "up_w": f"{prefix}.up_ternary",
+                "up_s": f"{prefix}.up_scale",
+                "down_w": f"{prefix}.down_ternary",
+                "down_s": f"{prefix}.down_scale",
+            }
+        else:
+            prefix = f"layers.{layer_idx}.ffn.experts.{expert_idx}"
+            names = {
+                "gate_w": f"{prefix}.gate_proj.weight",
+                "gate_s": f"{prefix}.gate_proj.scale",
+                "up_w": f"{prefix}.up_proj.weight",
+                "up_s": f"{prefix}.up_proj.scale",
+                "down_w": f"{prefix}.down_proj.weight",
+                "down_s": f"{prefix}.down_proj.scale",
+            }
+
+        shard_to_keys: Dict[str, Dict[str, str]] = {}
+        for slot, raw_key in names.items():
+            shard = self._tensor_shard_index[raw_key]
+            shard_to_keys.setdefault(shard, {})[slot] = raw_key
+
+        tensors: Dict[str, torch.Tensor] = {}
+        for shard, slot_map in shard_to_keys.items():
+            with safe_open(shard, framework="pt", device="cpu") as f:
+                for slot, raw_key in slot_map.items():
+                    tensors[slot] = f.get_tensor(raw_key)
+
+        return _ExpertWeights(
+            tensors["gate_w"], tensors["gate_s"],
+            tensors["up_w"], tensors["up_s"],
+            tensors["down_w"], tensors["down_s"],
+            packed=False,
+        )
+
+    def cache_stats(self) -> Dict[str, float]:
+        total = self._cache_hits + self._cache_misses
+        hit_rate = self._cache_hits / total if total > 0 else 0.0
+        return {
+            "hits": self._cache_hits,
+            "misses": self._cache_misses,
+            "lookups": total,
+            "hit_rate": hit_rate,
+            "evictions": self._cache_evictions,
+            "disk_loads": self._disk_loads,
+            "disk_load_s": self._disk_load_s,
+            "avg_disk_load_ms": (self._disk_load_s * 1000.0 / self._disk_loads) if self._disk_loads else 0.0,
+        }
 
 
 class _PagedLayer(nn.Module):
