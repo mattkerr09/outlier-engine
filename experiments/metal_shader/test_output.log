@@ -1,0 +1,38 @@
+2026-04-08 17:54:37,461 INFO [Attempt 1] metalcompute available: metalcompute.Device(Apple M1 Ultra)
+2026-04-08 17:54:37,461 INFO ============================================================
+2026-04-08 17:54:37,462 INFO CORRECTNESS TEST: TQ1_0 dequantization
+2026-04-08 17:54:37,462 INFO ============================================================
+2026-04-08 17:54:37,478 INFO   [Metal] 64 weights — MAX ABS ERROR: 0.000000
+2026-04-08 17:54:37,478 INFO Dequant correctness: PASS (max_err=0.000000, backend=metalcompute)
+2026-04-08 17:54:37,478 INFO ============================================================
+2026-04-08 17:54:37,478 INFO CORRECTNESS TEST: Fused SwiGLU expert MLP
+2026-04-08 17:54:37,478 INFO ============================================================
+2026-04-08 17:54:37,548 INFO   [Metal] MLP D=64 I=128 — MAX ABS ERROR: 0.500000
+2026-04-08 17:54:37,548 INFO MLP correctness: PASS (max_err=0.5000, tol=1.0, backend=metalcompute)
+2026-04-08 17:54:37,549 INFO ============================================================
+2026-04-08 17:54:37,549 INFO BENCHMARK RESULTS  (OUTLIER-ENGINE-METAL-PROTO-001)
+2026-04-08 17:54:37,549 INFO ============================================================
+2026-04-08 17:54:37,549 INFO 
+--- Small dims D=64, I=128 ---
+2026-04-08 17:54:37,840 INFO   TQ1_0 dequant [128x64]: 0.2854 ms/iter | input 0.01 GB/s | equiv fp16 0.06 GB/s
+2026-04-08 17:54:37,926 INFO   fp16 matmul [128x64] torch.matmul [cpu] (128x64 fp16 vec): 0.0832 ms/iter | 0.20 GFLOPS | weight 0.20 GB/s
+2026-04-08 17:54:37,926 INFO 
+--- Real model dims D=3584, I=18944 (Outlier-10B expert) ---
+2026-04-08 17:54:42,214 INFO   TQ1_0 dequant gate_proj [18944x3584]: 4.1707 ms/iter | input 3.26 GB/s | equiv fp16 32.56 GB/s
+2026-04-08 17:54:46,868 INFO   TQ1_0 dequant down_proj [3584x18944]: 4.5199 ms/iter | input 3.00 GB/s | equiv fp16 30.04 GB/s
+2026-04-08 17:54:48,405 INFO   fp16 matmul [18944x3584] torch.matmul [cpu] (18944x3584 fp16 vec): 0.7688 ms/iter | 176.63 GFLOPS | weight 176.63 GB/s
+2026-04-08 17:54:48,405 INFO 
+--- Theoretical Analysis ---
+2026-04-08 17:54:48,405 INFO   TQ1_0: 1.6 bits/weight vs FP16: 16.0 bits/weight
+2026-04-08 17:54:48,405 INFO   Memory bandwidth reduction factor: 10.0x
+2026-04-08 17:54:48,405 INFO   Expected speedup (bandwidth-bound): ~10x
+2026-04-08 17:54:48,405 INFO   Actual overhead: base-3 decode + scale multiply per weight
+2026-04-08 17:54:48,405 INFO 
+  Dequant-only time (gate+down): 8.6906 ms
+2026-04-08 17:54:48,405 INFO   fp16 matmul time (1 projection): 0.7688 ms
+2026-04-08 17:54:48,405 INFO   Dequant bandwidth vs matmul: slower (ratio 11.30x)
+2026-04-08 17:54:48,405 INFO 
+Benchmark complete.
+2026-04-08 17:54:48,405 INFO 
+All tests done. Logs: /Users/matthewkerr/outlier-engine/experiments/metal_shader/test_output.log
+2026-04-08 17:54:48,405 INFO Benchmark log: /Users/matthewkerr/outlier-engine/experiments/metal_shader/bench_output.log
