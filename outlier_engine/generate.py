@@ -48,7 +48,8 @@ def stream_generate(
     verbose_file=None,
 ) -> Generator[str, None, torch.Tensor]:
     tokenizer = loaded.tokenizer
-    prompt_ids = tokenizer.encode(prompt)
+    prompt_text = tokenizer.prepare_prompt(prompt) if hasattr(tokenizer, "prepare_prompt") else prompt
+    prompt_ids = tokenizer.encode(prompt_text)
     if not prompt_ids:
         raise ValueError("Prompt encoded to an empty token list.")
 
@@ -61,7 +62,8 @@ def stream_generate(
 
     with torch.no_grad():
         for _ in range(max_tokens):
-            logits = loaded.model(tokens)
+            model_out = loaded.model(tokens)
+            logits = model_out.logits if hasattr(model_out, "logits") else model_out
             next_logits = logits[:, -1, :]
             next_token = _sample_next_token(
                 next_logits,

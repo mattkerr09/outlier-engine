@@ -24,6 +24,24 @@ class OutlierTokenizer:
         """Encode text to a list of token ids (no special tokens added)."""
         return self._tok.encode(text, add_special_tokens=False)
 
+    def prepare_prompt(self, text: str) -> str:
+        """
+        Format chat/instruct prompts when the tokenizer exposes a chat template.
+
+        Raw special-token prompts are passed through unchanged so power users can
+        still provide an explicit template by hand.
+        """
+        if "<|im_start|>" in text or "<|im_end|>" in text:
+            return text
+        if hasattr(self._tok, "apply_chat_template") and getattr(self._tok, "chat_template", None):
+            messages = [{"role": "user", "content": text}]
+            return self._tok.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        return text
+
     def decode(self, token_ids: Union[List[int], "torch.Tensor"]) -> str:  # type: ignore[name-defined]
         """Decode token ids back to text, skipping special tokens."""
         if hasattr(token_ids, "tolist"):
