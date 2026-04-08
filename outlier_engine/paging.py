@@ -51,6 +51,7 @@ import gc
 import json
 import os
 import re
+import threading
 import time
 import warnings
 from collections import OrderedDict
@@ -63,6 +64,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .prefetch import ExpertPrefetcher
+from .routing_predictor import RoutingPredictor
 from .model import (
     _RMSNorm,
     _Attention,
@@ -77,6 +80,26 @@ try:
     from .model import _RotaryEmbedding
 except ImportError:
     _RotaryEmbedding = None  # will be caught if GQA path is needed
+
+
+def _profile_enabled() -> bool:
+    return bool(os.environ.get("OUTLIER_PROFILE"))
+
+
+def _sync_device(device: torch.device | str) -> None:
+    dev = device if isinstance(device, torch.device) else torch.device(device)
+    if dev.type == "mps":
+        try:
+            torch.mps.synchronize()
+        except Exception:
+            pass
+    elif dev.type == "cuda" and torch.cuda.is_available():
+        torch.cuda.synchronize()
+
+
+def _profile_log(message: str) -> None:
+    if _profile_enabled():
+        print(f"[OUTLIER_PROFILE] {message}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -327,12 +350,15 @@ class _ExpertWeights:
         gate_s = weights.gate_s.to(device=device, dtype=compute_dtype)
         up_s = weights.up_s.to(device=device, dtype=compute_dtype)
         down_s = weights.down_s.to(device=device, dtype=compute_dtype)
+        gate_w = weights.gate_w.to(device=device, dtype=compute_dtype) * gate_s
+        up_w = weights.up_w.to(device=device, dtype=compute_dtype) * up_s
+        down_w = weights.down_w.to(device=device, dtype=compute_dtype) * down_s
         return _ExpertWeights(
-            weights.gate_w.to(device=device, dtype=compute_dtype) * gate_s,
+            gate_w.contiguous(),
             gate_s,
-            weights.up_w.to(device=device, dtype=compute_dtype) * up_s,
+            up_w.contiguous(),
             up_s,
-            weights.down_w.to(device=device, dtype=compute_dtype) * down_s,
+            down_w.contiguous(),
             down_s,
             packed=False,
             dequantized=True,
@@ -365,10 +391,38 @@ class _ExpertWeights:
 
         if self.dequantized:
             compute_dtype = torch.float32 if x.device.type == "cpu" else torch.float16
-            x_dev = x.to(compute_dtype)
-            gate = F.silu(F.linear(x_dev, self.gate_w.to(compute_dtype)))
-            up = F.linear(x_dev, self.up_w.to(compute_dtype))
-            return F.linear(gate * up, self.down_w.to(compute_dtype))
+            x_dev = x if (x.dtype == compute_dtype and x.device == self.gate_w.device) else x.to(
+                device=self.gate_w.device, dtype=compute_dtype
+            )
+            if _profile_enabled():
+                _sync_device(x_dev.device)
+                stage_t0 = time.perf_counter()
+                gate_raw = F.linear(x_dev, self.gate_w)
+                _sync_device(x_dev.device)
+                gate_ms = (time.perf_counter() - stage_t0) * 1000.0
+                stage_t0 = time.perf_counter()
+                up = F.linear(x_dev, self.up_w)
+                _sync_device(x_dev.device)
+                up_ms = (time.perf_counter() - stage_t0) * 1000.0
+                stage_t0 = time.perf_counter()
+                gate = F.silu(gate_raw)
+                _sync_device(x_dev.device)
+                activation_ms = (time.perf_counter() - stage_t0) * 1000.0
+                stage_t0 = time.perf_counter()
+                out = F.linear(gate * up, self.down_w)
+                _sync_device(x_dev.device)
+                down_ms = (time.perf_counter() - stage_t0) * 1000.0
+                _profile_log(
+                    "expert_run "
+                    f"mode=dequantized x_device={x_dev.device} w_device={self.gate_w.device} "
+                    f"gate_ms={gate_ms:.2f} up_ms={up_ms:.2f} activation_ms={activation_ms:.2f} "
+                    f"down_ms={down_ms:.2f}"
+                )
+                return out
+
+            gate = F.silu(F.linear(x_dev, self.gate_w))
+            up = F.linear(x_dev, self.up_w)
+            return F.linear(gate * up, self.down_w)
 
         if x.device.type != "cpu":
             compute_dtype = torch.float16
@@ -546,6 +600,8 @@ def load_hybrid_paged_qwen(
         model_dir,
         device=device,
         n_experts=cfg.get("n_experts", 0),
+        n_layers=cfg["n_layers"],
+        top_k=cfg.get("top_k", 2),
         max_experts_in_memory=max_experts_in_memory,
         max_warm_cache=max_warm_cache,
         packed_experts_dir=packed_experts_dir,
@@ -620,12 +676,56 @@ def load_hybrid_paged_qwen(
     model.outlier_device = torch.device(device)
     model.outlier_page_manager = page_manager
     model.cache_stats = MethodType(lambda self: self.outlier_page_manager.cache_stats(), model)
+    model.prefetch_stats = MethodType(lambda self: self.outlier_page_manager.prefetch_stats(), model)
+
+    def _enable_expert_prefetch(self) -> None:
+        self.outlier_page_manager.enable_expert_prefetch()
+        if getattr(self, "_outlier_prefetch_hooks", None):
+            return
+
+        handles = []
+        for layer_idx, layer in enumerate(self.model.layers):
+            def _wait_hook(_module, _inputs, current_layer=layer_idx):
+                self.outlier_page_manager.wait_for_layer(current_layer)
+
+            handles.append(layer.register_forward_pre_hook(_wait_hook))
+        self._outlier_prefetch_hooks = handles
+
+    model.enable_expert_prefetch = MethodType(_enable_expert_prefetch, model)
     return model
 
 
 def _run_expert(x: torch.Tensor, w: _ExpertWeights) -> torch.Tensor:
     """Run ternary expert via chunked matmul. Returns float32."""
     return w.run(x)
+
+
+def _run_single_token_experts_batched(x: torch.Tensor, experts: list[_ExpertWeights]) -> torch.Tensor:
+    """Run a small set of dequantized device experts together for one-token decode."""
+    if not experts:
+        raise ValueError("Expected at least one expert for batched execution.")
+    if len(experts) == 1:
+        return _run_expert(x, experts[0])
+
+    first = experts[0]
+    if (
+        first.gate_w.device.type == "cpu"
+        or not all(w.dequantized and w.gate_w.device == first.gate_w.device for w in experts)
+    ):
+        return torch.cat([_run_expert(x, expert) for expert in experts], dim=0)
+
+    compute_dtype = first.gate_w.dtype
+    x_dev = x if (x.dtype == compute_dtype and x.device == first.gate_w.device) else x.to(
+        device=first.gate_w.device, dtype=compute_dtype
+    )
+    x_vec = x_dev.squeeze(0)
+    gate_w = torch.stack([expert.gate_w for expert in experts], dim=0)
+    up_w = torch.stack([expert.up_w for expert in experts], dim=0)
+    down_w = torch.stack([expert.down_w for expert in experts], dim=0)
+    gate = torch.matmul(gate_w, x_vec.unsqueeze(-1)).squeeze(-1)
+    up = torch.matmul(up_w, x_vec.unsqueeze(-1)).squeeze(-1)
+    hidden = F.silu(gate) * up
+    return torch.matmul(down_w, hidden.unsqueeze(-1)).squeeze(-1)
 
 
 # ---------------------------------------------------------------------------
@@ -679,11 +779,21 @@ class _HybridPagedMLP(nn.Module):
         probs = F.softmax(logits, dim=-1)
         top_w, top_idx = torch.topk(probs, k=self.top_k, dim=-1)
         top_w = top_w / top_w.sum(-1, keepdim=True)
+        used_expert_ids = [int(expert_id) for expert_id in torch.unique(top_idx).tolist()]
+        self.page_manager.record_layer_routing(self.layer_idx, logits.detach(), used_expert_ids)
 
         shared_out = self.shared(x_flat.to(compute_dtype))
         expert_out = torch.zeros_like(shared_out)
 
-        for expert_idx in torch.unique(top_idx).tolist():
+        if x_flat.shape[0] == 1 and len(used_expert_ids) > 1:
+            experts = [self.page_manager.get_expert(self.layer_idx, int(expert_idx)) for expert_idx in used_expert_ids]
+            batched_out = _run_single_token_experts_batched(x_flat, experts).to(shared_out.dtype)
+            for row_idx, expert_idx in enumerate(used_expert_ids):
+                weight = (top_w[0] * (top_idx[0] == expert_idx).to(top_w.dtype)).sum()
+                expert_out[0] += weight * batched_out[row_idx]
+            return (shared_out + expert_out).to(x.dtype).view(batch, seq_len, hidden_dim)
+
+        for expert_idx in used_expert_ids:
             assignment = top_idx == expert_idx
             token_mask = assignment.any(dim=-1)
             if not token_mask.any():
@@ -705,6 +815,8 @@ class ExpertPageManager:
         device: str | torch.device = "mps",
         *,
         n_experts: int,
+        n_layers: int = 0,
+        top_k: int = 2,
         max_experts_in_memory: int = 64,
         max_warm_cache: int = 256,
         packed_experts_dir: Optional[str] = None,
@@ -712,10 +824,13 @@ class ExpertPageManager:
         self.model_dir = Path(model_dir)
         self.device = torch.device(device)
         self.n_experts = n_experts
+        self.n_layers = n_layers
+        self.top_k = top_k
         self.max_experts_in_memory = max_experts_in_memory
         self.max_warm_cache = max_warm_cache
         self._debug = bool(os.environ.get("OUTLIER_CACHE_DEBUG"))
         self._forward_passes = 0
+        self._lock = threading.RLock()
 
         self._hot_cache: OrderedDict[Tuple[int, int], _ExpertWeights] = OrderedDict()
         self._cpu_cache: OrderedDict[Tuple[int, int], _ExpertWeights] = OrderedDict()
@@ -729,9 +844,20 @@ class ExpertPageManager:
         self._packed_index: Dict[str, Dict[str, object]] = {}
         self._packed_experts_dir = Path(packed_experts_dir).expanduser() if packed_experts_dir else None
         self._fmt = "toy"
+        self._prefetcher: ExpertPrefetcher | None = None
+        self._routing_predictor: RoutingPredictor | None = None
+        self._last_routed_layer: int | None = None
+        self._last_routed_experts: list[int] = []
 
         self._build_shard_index()
         self._load_packed_index()
+
+    def _get_lock(self) -> threading.RLock:
+        lock = getattr(self, "_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._lock = lock
+        return lock
 
     def _debug_log(self, message: str) -> None:
         if self._debug:
@@ -780,39 +906,143 @@ class ExpertPageManager:
             self._cpu_cache.popitem(last=False)
         self._cpu_cache[key] = weights
 
+    def enable_expert_prefetch(self) -> None:
+        if getattr(self, "_prefetcher", None) is None:
+            self._prefetcher = ExpertPrefetcher(self)
+            self._routing_predictor = RoutingPredictor()
+            self._last_routed_layer = None
+            self._last_routed_experts = []
+
+    def wait_for_layer(self, layer_idx: int) -> None:
+        prefetcher = getattr(self, "_prefetcher", None)
+        if prefetcher is not None:
+            prefetcher.wait(layer_idx)
+
+    def prefetch_expert(self, layer_idx: int, expert_idx: int) -> bool:
+        key = (layer_idx, expert_idx)
+        on_cpu = self.device.type == "cpu"
+
+        with self._get_lock():
+            if key in self._hot_cache or key in self._cpu_cache:
+                return False
+
+        start = time.perf_counter()
+        weights_int8 = self._load_expert_from_disk(layer_idx, expert_idx)
+        load_s = time.perf_counter() - start
+        weights_cached = weights_int8 if on_cpu else weights_int8.pack_tq10()
+
+        with self._get_lock():
+            if key in self._hot_cache or key in self._cpu_cache:
+                return False
+            self._disk_loads += 1
+            self._disk_load_s += load_s
+            self._add_to_warm_cache(key, weights_cached)
+        return True
+
+    def record_layer_routing(self, layer_idx: int, routing_logits: torch.Tensor, expert_ids: list[int]) -> None:
+        prefetcher = getattr(self, "_prefetcher", None)
+        predictor = getattr(self, "_routing_predictor", None)
+        if prefetcher is None or predictor is None:
+            return
+
+        prefetcher.record_usage(layer_idx, expert_ids)
+        if self._last_routed_layer is not None and self._last_routed_layer + 1 == layer_idx:
+            predictor.update(self._last_routed_layer, self._last_routed_experts, expert_ids)
+
+        self._last_routed_layer = layer_idx
+        self._last_routed_experts = list(expert_ids)
+
+        if layer_idx + 1 >= self.n_layers:
+            return
+
+        predicted = predictor.predict(layer_idx, expert_ids, top_k=self.top_k)
+        prefetcher.prefetch(
+            layer_idx + 1,
+            routing_logits=routing_logits,
+            top_k=self.top_k,
+            predicted_expert_ids=predicted,
+        )
+
+    def prefetch_stats(self) -> Dict[str, float]:
+        prefetcher = getattr(self, "_prefetcher", None)
+        if prefetcher is None:
+            return {
+                "prefetches_issued": 0,
+                "prefetch_hits": 0,
+                "prefetch_wastes": 0,
+                "prefetch_accuracy": 0.0,
+            }
+        return prefetcher.prefetch_stats
+
     def get_expert(self, layer_idx: int, expert_idx: int) -> _ExpertWeights:
         key = (layer_idx, expert_idx)
         on_cpu = self.device.type == "cpu"
         self._debug_log(f"lookup key={key}")
+        lookup_t0 = time.perf_counter() if _profile_enabled() else 0.0
 
-        if key in self._hot_cache:
-            self._hot_cache.move_to_end(key)
-            self._hot_hits += 1
-            self._debug_log(f"hit level=hot key={key}")
-            return self._hot_cache[key]
+        with self._get_lock():
+            if key in self._hot_cache:
+                self._hot_cache.move_to_end(key)
+                self._hot_hits += 1
+                self._debug_log(f"hit level=hot key={key}")
+                if _profile_enabled():
+                    _profile_log(
+                        f"expert_lookup key={key} level=hot elapsed_ms={(time.perf_counter() - lookup_t0) * 1000.0:.2f} "
+                        f"device={self._hot_cache[key].gate_w.device}"
+                    )
+                return self._hot_cache[key]
 
-        if key in self._cpu_cache:
-            self._cpu_cache.move_to_end(key)
-            weights_cached = self._cpu_cache[key]
-            self._warm_hits += 1
-            self._debug_log(f"hit level=warm key={key}")
-        else:
-            self._cold_misses += 1
+            if key in self._cpu_cache:
+                self._cpu_cache.move_to_end(key)
+                weights_cached = self._cpu_cache[key]
+                self._warm_hits += 1
+                self._debug_log(f"hit level=warm key={key}")
+                load_ms = 0.0
+            else:
+                weights_cached = None
+                load_ms = 0.0
+
+        if weights_cached is None:
             self._debug_log(f"miss key={key}")
             start = time.perf_counter()
             weights_int8 = self._load_expert_from_disk(layer_idx, expert_idx)
-            self._disk_loads += 1
-            self._disk_load_s += time.perf_counter() - start
+            load_s = time.perf_counter() - start
             weights_cached = weights_int8 if on_cpu else weights_int8.pack_tq10()
-            self._add_to_warm_cache(key, weights_cached)
+            load_ms = load_s * 1000.0
+            with self._get_lock():
+                if key in self._hot_cache:
+                    self._hot_cache.move_to_end(key)
+                    self._hot_hits += 1
+                    return self._hot_cache[key]
+                if key in self._cpu_cache:
+                    self._cpu_cache.move_to_end(key)
+                    weights_cached = self._cpu_cache[key]
+                    self._warm_hits += 1
+                    load_ms = 0.0
+                else:
+                    self._cold_misses += 1
+                    self._disk_loads += 1
+                    self._disk_load_s += load_s
+                    self._add_to_warm_cache(key, weights_cached)
 
-        if len(self._hot_cache) >= self.max_experts_in_memory:
-            evicted_key, _ = self._hot_cache.popitem(last=False)
-            self._hot_evictions += 1
-            self._debug_log(f"evict hot key={evicted_key}")
-
+        prep_t0 = time.perf_counter() if _profile_enabled() else 0.0
         weights_hot = weights_cached.hot_ready(self.device)
-        self._hot_cache[key] = weights_hot
+        with self._get_lock():
+            if key in self._hot_cache:
+                self._hot_cache.move_to_end(key)
+                self._hot_hits += 1
+                return self._hot_cache[key]
+            if len(self._hot_cache) >= self.max_experts_in_memory:
+                evicted_key, _ = self._hot_cache.popitem(last=False)
+                self._hot_evictions += 1
+                self._debug_log(f"evict hot key={evicted_key}")
+            self._hot_cache[key] = weights_hot
+        if _profile_enabled():
+            _profile_log(
+                f"expert_lookup key={key} level={'warm' if key in self._cpu_cache and load_ms == 0.0 else 'cold'} "
+                f"disk_ms={load_ms:.2f} hot_ready_ms={(time.perf_counter() - prep_t0) * 1000.0:.2f} "
+                f"elapsed_ms={(time.perf_counter() - lookup_t0) * 1000.0:.2f} device={weights_hot.gate_w.device}"
+            )
         return weights_hot
 
     def _load_expert_from_packed(self, layer_idx: int, expert_idx: int) -> Optional[_ExpertWeights]:
@@ -890,7 +1120,7 @@ class ExpertPageManager:
         hit_rate = total_hits / total if total > 0 else 0.0
         hot_cache_bytes = sum(weights.nbytes() for weights in self._hot_cache.values())
         warm_cache_bytes = sum(weights.nbytes() for weights in self._cpu_cache.values())
-        return {
+        stats = {
             "hits": total_hits,
             "hot_hits": self._hot_hits,
             "warm_hits": self._warm_hits,
@@ -908,6 +1138,8 @@ class ExpertPageManager:
             "warm_cache_entries": len(self._cpu_cache),
             "warm_cache_mb": warm_cache_bytes / 1024**2,
         }
+        stats.update(self.prefetch_stats())
+        return stats
 
 
 class _PagedLayer(nn.Module):
@@ -1100,6 +1332,7 @@ class OutlierPagedModel(nn.Module):
         self._cache_evictions = 0   # total device→CPU evictions
         self._disk_loads      = 0
         self._disk_load_s     = 0.0
+        self._lock            = threading.RLock()
 
         # Tensor-level shard index: raw_tensor_key → shard_path
         self._tensor_shard_index: Dict[str, str] = {}
@@ -1119,25 +1352,32 @@ class OutlierPagedModel(nn.Module):
         self.to(self.device)
         self.eval()
 
-        # Async prefetcher (None = disabled; set via enable_async_prefetch())
-        self._async_prefetcher = None
+        self._expert_prefetcher: ExpertPrefetcher | None = None
+        self._routing_predictor: RoutingPredictor | None = None
+        self._last_routed_layer: int | None = None
+        self._last_routed_experts: list[int] = []
 
     # ------------------------------------------------------------------
     # Async prefetch integration
     # ------------------------------------------------------------------
 
-    def enable_async_prefetch(self, max_prefetch_ahead: int = 2) -> None:
-        """
-        Attach an AsyncExpertPrefetcher so the forward() loop overlaps
-        attention compute with expert loading.
+    def enable_expert_prefetch(self) -> None:
+        if self._expert_prefetcher is None:
+            self._expert_prefetcher = ExpertPrefetcher(self)
+            self._routing_predictor = RoutingPredictor()
+            self._last_routed_layer = None
+            self._last_routed_experts = []
 
-        OUTLIER-RUNTIME-004: router-first execution — router runs on
-        pre-attention hidden state to start prefetching while attention
-        computes.  Prefetcher is used in place of direct load_expert()
-        calls when enabled.
-        """
-        from .async_engine import AsyncExpertPrefetcher
-        self._async_prefetcher = AsyncExpertPrefetcher(self, max_prefetch_ahead)
+    def enable_async_prefetch(self, max_prefetch_ahead: int = 2) -> None:
+        del max_prefetch_ahead
+        self.enable_expert_prefetch()
+
+    def _get_lock(self) -> threading.RLock:
+        lock = getattr(self, "_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._lock = lock
+        return lock
 
     # ------------------------------------------------------------------
     # Index building
@@ -1299,6 +1539,51 @@ class OutlierPagedModel(nn.Module):
             self._cpu_cache.popitem(last=False)   # evict LRU from warm cache
         self._cpu_cache[key] = weights
 
+    def prefetch_expert(self, layer_idx: int, expert_idx: int) -> bool:
+        key = (layer_idx, expert_idx)
+        on_cpu = self.device.type == "cpu"
+
+        with self._get_lock():
+            if key in self._lru_cache or key in self._cpu_cache:
+                return False
+
+        start = time.perf_counter()
+        weights_int8 = self._load_expert_from_disk(layer_idx, expert_idx)
+        load_s = time.perf_counter() - start
+        weights_cached = weights_int8 if on_cpu else weights_int8.pack_tq10()
+
+        with self._get_lock():
+            if key in self._lru_cache or key in self._cpu_cache:
+                return False
+            self._disk_loads += 1
+            self._disk_load_s += load_s
+            self._add_to_warm_cache(key, weights_cached)
+        return True
+
+    def _record_layer_routing(self, layer_idx: int, routing_logits: torch.Tensor, expert_ids: list[int]) -> None:
+        prefetcher = self._expert_prefetcher
+        predictor = self._routing_predictor
+        if prefetcher is None or predictor is None:
+            return
+
+        prefetcher.record_usage(layer_idx, expert_ids)
+        if self._last_routed_layer is not None and self._last_routed_layer + 1 == layer_idx:
+            predictor.update(self._last_routed_layer, self._last_routed_experts, expert_ids)
+
+        self._last_routed_layer = layer_idx
+        self._last_routed_experts = list(expert_ids)
+
+        if layer_idx + 1 >= self.n_layers:
+            return
+
+        predicted = predictor.predict(layer_idx, expert_ids, top_k=self.top_k)
+        prefetcher.prefetch(
+            layer_idx + 1,
+            routing_logits=routing_logits,
+            top_k=self.top_k,
+            predicted_expert_ids=predicted,
+        )
+
     def load_expert(self, layer_idx: int, expert_idx: int) -> _ExpertWeights:
         """
         Return expert weights on device, paging through the two-tier cache.
@@ -1311,42 +1596,55 @@ class OutlierPagedModel(nn.Module):
         key = (layer_idx, expert_idx)
         on_cpu = self.device.type == "cpu"
 
-        # ── Device cache hit ──────────────────────────────────────────
-        if key in self._lru_cache:
-            self._lru_cache.move_to_end(key)
-            self._cache_hits += 1
-            return self._lru_cache[key]
+        with self._get_lock():
+            if key in self._lru_cache:
+                self._lru_cache.move_to_end(key)
+                self._cache_hits += 1
+                return self._lru_cache[key]
 
-        self._cache_misses += 1
+            self._cache_misses += 1
 
-        # ── Evict LRU from device cache → CPU warm cache (2-bit packed) ──
-        if len(self._lru_cache) >= self.max_experts_in_memory:
-            evicted_key, evicted_w = self._lru_cache.popitem(last=False)
-            self._cache_evictions += 1
-            # On CPU there is no device/host boundary, so avoid wasteful
-            # pack/unpack churn and keep the expert in native int8 form.
-            cached_w = evicted_w.cpu() if on_cpu else evicted_w.cpu().pack_tq10()
-            self._add_to_warm_cache(evicted_key, cached_w)
+            if len(self._lru_cache) >= self.max_experts_in_memory:
+                evicted_key, evicted_w = self._lru_cache.popitem(last=False)
+                self._cache_evictions += 1
+                cached_w = evicted_w.cpu() if on_cpu else evicted_w.cpu().pack_tq10()
+                self._add_to_warm_cache(evicted_key, cached_w)
 
-        # ── Load from warm cache or cold disk ─────────────────────────
-        if key in self._cpu_cache:
-            self._cpu_cache.move_to_end(key)
-            weights_cached = self._cpu_cache[key]
-        else:
-            # Cold: load int8 from disk, optionally pack for non-CPU warm cache
+            if key in self._cpu_cache:
+                self._cpu_cache.move_to_end(key)
+                weights_cached = self._cpu_cache[key]
+            else:
+                weights_cached = None
+
+        if weights_cached is None:
             start = time.perf_counter()
-            weights_int8   = self._load_expert_from_disk(layer_idx, expert_idx)
-            self._disk_loads += 1
-            self._disk_load_s += time.perf_counter() - start
+            weights_int8 = self._load_expert_from_disk(layer_idx, expert_idx)
+            load_s = time.perf_counter() - start
             weights_cached = weights_int8 if on_cpu else weights_int8.pack_tq10()
-            self._add_to_warm_cache(key, weights_cached)
+            with self._get_lock():
+                if key in self._lru_cache:
+                    self._lru_cache.move_to_end(key)
+                    self._cache_hits += 1
+                    return self._lru_cache[key]
+                if key in self._cpu_cache:
+                    self._cpu_cache.move_to_end(key)
+                    weights_cached = self._cpu_cache[key]
+                else:
+                    self._disk_loads += 1
+                    self._disk_load_s += load_s
+                    self._add_to_warm_cache(key, weights_cached)
 
-        # ── Move to device: unpack only when the warm cache stores packed bytes ────
         if on_cpu:
             weights_dev = weights_cached
         else:
             weights_dev = weights_cached.unpack_to_int8().to(self.device)
-        self._lru_cache[key] = weights_dev
+
+        with self._get_lock():
+            if key in self._lru_cache:
+                self._lru_cache.move_to_end(key)
+                self._cache_hits += 1
+                return self._lru_cache[key]
+            self._lru_cache[key] = weights_dev
         return weights_dev
 
     def _load_expert_from_disk(
@@ -1463,29 +1761,9 @@ class OutlierPagedModel(nn.Module):
             causal_mask = _causal_mask(L, device=input_ids.device, dtype=x.dtype)
 
         for i, layer in enumerate(self.layers):
-            prefetcher = self._async_prefetcher
-
-            # ── Router-first: async prefetch (OUTLIER-RUNTIME-004) ────────
-            # Run router on pre-attention x to start expert loading while
-            # attention computes.  Only when prefetcher is enabled.
-            if prefetcher is not None and layer.n_experts > 0:
-                ffn_pre: _PagedMoEFFN = layer.ffn   # type: ignore[assignment]
-                h_pre      = layer.ffn_norm(x)
-                h_pre_flat = h_pre.view(-1, D)
-                logits_pre = F.linear(
-                    h_pre_flat.float(), ffn_pre.router_weight.float()
-                )
-                _, top_idx_pre = torch.topk(
-                    F.softmax(logits_pre, dim=-1), k=self.top_k, dim=-1
-                )
-                # Prefetch current layer's likely experts
-                prefetcher.prefetch_experts_async(i, top_idx_pre)
-                # Predict and prefetch next layer's experts
-                if i + 1 < self.n_layers:
-                    next_pred = prefetcher.predict_next_experts(
-                        i, logits_pre, topk=self.top_k
-                    )
-                    prefetcher.prefetch_experts_async(i + 1, next_pred)
+            prefetcher = self._expert_prefetcher
+            if prefetcher is not None:
+                prefetcher.wait(i)
 
             # ── Attention (always device-resident) ────────────────────────
             # On CUDA/MPS this overlaps with the prefetch kicked off above.
@@ -1518,10 +1796,8 @@ class OutlierPagedModel(nn.Module):
                 probs  = F.softmax(logits, dim=-1)
                 top_w, top_idx = torch.topk(probs, k=self.top_k, dim=-1)
                 top_w = top_w / top_w.sum(-1, keepdim=True)
-
-                # Sync prefetch before accessing expert weights
-                if prefetcher is not None:
-                    prefetcher.sync_prefetch()
+                used_expert_ids = [int(expert_id) for expert_id in torch.unique(top_idx).tolist()]
+                self._record_layer_routing(i, logits.detach(), used_expert_ids)
 
                 # Shared expert (always device-resident, INT8 quantised)
                 shared_out = ffn.shared(h_flat).float()   # [N, D]
@@ -1530,21 +1806,15 @@ class OutlierPagedModel(nn.Module):
                 expert_out = torch.zeros(
                     N, D, device=self.device, dtype=torch.float32
                 )
-                for e in torch.unique(top_idx).tolist():
+                for e in used_expert_ids:
                     assignment = (top_idx == e)
                     token_mask = assignment.any(dim=-1)
                     if not token_mask.any():
                         continue
                     weights = (top_w * assignment.to(top_w.dtype)).sum(dim=-1, keepdim=True)
-                    if prefetcher is not None:
-                        w = prefetcher.get_expert(i, int(e))
-                    else:
-                        w = self.load_expert(i, int(e))
+                    w = self.load_expert(i, int(e))
                     out = _run_expert(h_flat[token_mask], w)
                     expert_out[token_mask] += weights[token_mask] * out
-
-                if prefetcher is not None:
-                    prefetcher.clear_layer(i)
 
                 x = x + (shared_out + expert_out).to(x.dtype).view(B, L, D)
             else:
@@ -1582,6 +1852,8 @@ class OutlierPagedModel(nn.Module):
         self._cache_evictions = 0
         self._disk_loads      = 0
         self._disk_load_s     = 0.0
+        self._last_routed_layer = None
+        self._last_routed_experts = []
 
         tokens = input_ids
         kv_cache = KVCache()
@@ -1615,7 +1887,7 @@ class OutlierPagedModel(nn.Module):
     def cache_stats(self) -> Dict[str, float]:
         total = self._cache_hits + self._cache_misses
         hit_rate = self._cache_hits / total if total > 0 else 0.0
-        return {
+        stats = {
             "hits": self._cache_hits,
             "misses": self._cache_misses,
             "lookups": total,
@@ -1625,3 +1897,6 @@ class OutlierPagedModel(nn.Module):
             "disk_load_s": self._disk_load_s,
             "avg_disk_load_ms": (self._disk_load_s * 1000.0 / self._disk_loads) if self._disk_loads else 0.0,
         }
+        if self._expert_prefetcher is not None:
+            stats.update(self._expert_prefetcher.prefetch_stats)
+        return stats

@@ -52,14 +52,16 @@ Paged mode is experimental today.
   - Cold: packed expert files on disk
 - Measured on Apple M1 Ultra (MPS) with `Outlier-Ai/Outlier-10B`
 - Prompt: `"Hello"`
-- Token 1 latency: `50.14s`
-- Tokens 2-5 average latency: `8.07s`
-- Peak RSS during the run: `6.77 GB`
+- Token 1 latency: `48.29s`
+- Token 2 latency: `10.46s`
+- Tokens 3-5 average latency: `0.80s`
+- Tokens 2-5 average latency: `3.22s`
+- Peak RSS during the run: `7.08 GB`
 - Hot hit rate after token 1: `77.7%`
 - Warm hit rate after token 1: `21.9%`
 - Cold miss rate after token 1: `0.4%`
 
-Current takeaway: the hot cache materially improved paged reuse and cut token 2-5 latency, but paged mode is still experimental and slower than the standard non-paged path.
+Current takeaway: paged mode is still experimental, but once the cache is warm the decode path is now much faster. The first token is still expensive, token 2 is still a warm-cache transition, and tokens 3-5 are the real steady-state number.
 
 ## Commands
 

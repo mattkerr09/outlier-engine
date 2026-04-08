@@ -169,6 +169,7 @@ def load_model(
     token: Optional[str] = None,
     device: Optional[str] = None,
     paged: Optional[bool] = None,
+    prefetch: Optional[bool] = None,
     max_experts_in_memory: int = 64,
     max_warm_cache: int = 256,
     packed_experts_dir: Optional[str] = None,
@@ -254,6 +255,12 @@ def load_model(
     if model is None:
         assert last_error is not None
         raise last_error
+
+    prefetch_enabled = prefetch
+    if prefetch_enabled is None:
+        prefetch_enabled = os.environ.get("OUTLIER_PREFETCH", "").strip() == "1"
+    if prefetch_enabled and paged and hasattr(model, "enable_expert_prefetch"):
+        model.enable_expert_prefetch()
 
     return LoadedOutlier(
         model_ref=resolved_ref,

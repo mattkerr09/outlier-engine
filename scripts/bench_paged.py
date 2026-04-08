@@ -45,13 +45,16 @@ def _sync(device: str) -> None:
 def _format_cache(stats: dict[str, Any] | None) -> str:
     if not stats:
         return "cache=unavailable"
-    return (
+    summary = (
         f"hot_hits={stats.get('hot_hits', 0)} "
         f"warm_hits={stats.get('warm_hits', 0)} "
         f"cold_misses={stats.get('cold_misses', stats.get('misses', 0))} "
         f"lookups={stats.get('lookups', 0)} "
         f"hit_rate={stats.get('hit_rate', 0.0):.1%}"
     )
+    if "prefetch_accuracy" in stats:
+        summary += f" prefetch_accuracy={stats.get('prefetch_accuracy', 0.0):.1%}"
+    return summary
 
 
 def main() -> int:
@@ -60,6 +63,7 @@ def main() -> int:
     parser.add_argument("--prompt", default="Hello")
     parser.add_argument("--tokens", type=int, default=5)
     parser.add_argument("--device", default=_default_device())
+    parser.add_argument("--prefetch", action="store_true")
     args = parser.parse_args()
 
     print(f"model={args.model}")
@@ -69,7 +73,7 @@ def main() -> int:
     print("loading paged model...", flush=True)
 
     load_t0 = time.perf_counter()
-    loaded = load_model(args.model, paged=True, device=args.device)
+    loaded = load_model(args.model, paged=True, device=args.device, prefetch=args.prefetch)
     _sync(args.device)
     load_s = time.perf_counter() - load_t0
 
@@ -141,6 +145,8 @@ def main() -> int:
     token1 = token_latencies[0] if token_latencies else 0.0
     tail = token_latencies[1:] if len(token_latencies) > 1 else []
     tail_avg = (sum(tail) / len(tail)) if tail else 0.0
+    tail_hot = token_latencies[2:] if len(token_latencies) > 2 else []
+    tail_hot_avg = (sum(tail_hot) / len(tail_hot)) if tail_hot else 0.0
     post_first = cache_snapshots[0] if cache_snapshots else {}
     final_stats = cache_snapshots[-1] if cache_snapshots else {}
     lookups_after_first = int(final_stats.get("lookups", 0)) - int(post_first.get("lookups", 0))
@@ -156,9 +162,15 @@ def main() -> int:
     print("summary")
     print(f"token_1_latency_s={token1:.2f}")
     print(f"token_2_to_5_avg_latency_s={tail_avg:.2f}")
+    print(f"token_3_to_5_avg_latency_s={tail_hot_avg:.2f}")
     print(f"hot_hit_rate_after_token_1={hot_hit_rate_after_first:.1%}")
     print(f"warm_hit_rate_after_token_1={warm_hit_rate_after_first:.1%}")
     print(f"cold_miss_rate_after_token_1={cold_miss_rate_after_first:.1%}")
+    if "prefetch_accuracy" in final_stats:
+        print(f"prefetch_accuracy={final_stats.get('prefetch_accuracy', 0.0):.1%}")
+        print(f"prefetches_issued={int(final_stats.get('prefetches_issued', 0))}")
+        print(f"prefetch_hits={int(final_stats.get('prefetch_hits', 0))}")
+        print(f"prefetch_wastes={int(final_stats.get('prefetch_wastes', 0))}")
     print(f"hot_cache_entries={final_stats.get('hot_cache_entries', 0)}")
     print(f"hot_cache_mb={final_stats.get('hot_cache_mb', 0.0):.1f}")
     print(f"final_cache_stats={final_stats}")
