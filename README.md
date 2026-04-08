@@ -2,7 +2,7 @@
 
 Inference engine for [Outlier](https://outlier.host) ternary-quantized Mixture-of-Experts language models.
 
-**6.1 tokens/sec** on Apple M1 Ultra. Streaming output. One command.
+**16.9 tokens/sec** on Apple M1 Ultra. Streaming output. One command.
 
 ## Quick start
 
@@ -32,7 +32,7 @@ All benchmarks: lm-evaluation-harness v0.4.9.1, N=570, 5-shot, bf16.
 
 | Device | tok/s | Notes |
 |--------|-------|-------|
-| Apple M1 Ultra (MPS) | 6.1 | Default on macOS |
+| Apple M1 Ultra (MPS) | 16.9 | Default on macOS |
 | CPU fallback | ~0.5 | Any platform |
 
 ## Commands
