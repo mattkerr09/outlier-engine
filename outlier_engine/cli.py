@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
+import time
 from typing import Optional
 
 from .generate import benchmark_generation, stream_generate
@@ -87,16 +89,29 @@ def main(argv: Optional[list[str]] = None) -> int:
             max_experts_in_memory=args.max_experts,
             max_warm_cache=args.max_warm_cache,
         )
-        for _ in stream_generate(
+        generator = stream_generate(
             loaded,
             args.prompt,
             max_tokens=args.max_tokens,
             temperature=args.temperature,
             top_p=args.top_p,
+            file=sys.stdout,
             verbose=args.verbose,
-        ):
-            pass
+            verbose_file=sys.stderr,
+        )
+        t0 = time.perf_counter()
+        token_count = 0
+        while True:
+            try:
+                next(generator)
+            except StopIteration as stop:
+                result = stop.value or {}
+                token_count = int(result.get("tokens", token_count))
+                break
         print()
+        elapsed = time.perf_counter() - t0
+        tok_s = token_count / max(elapsed, 1e-6)
+        print(f"Generated {token_count} tokens in {elapsed:.1f}s ({tok_s:.1f} tok/s)")
         return 0
 
     if args.command == "bench":

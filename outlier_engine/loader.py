@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -27,15 +28,19 @@ def _canonical_model_ref(model_ref: str) -> str:
 
 
 def _auto_device() -> str:
-    # The PyTorch MPS fallback path is currently much slower and harder to
-    # debug than the CPU path for this runtime, so prefer CPU on macOS.
-    if platform.system() == "Darwin":
-        return "cpu"
     if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
         return "mps"
     if torch.cuda.is_available():
         return "cuda"
     return "cpu"
+
+
+def _candidate_devices(requested_device: Optional[str]) -> list[str]:
+    if requested_device:
+        return [requested_device]
+    if platform.system() == "Darwin" and getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        return ["mps", "cpu"]
+    return [_auto_device()]
 
 
 def _resolve_model_dir(model_ref: str, token: Optional[str] = None) -> Path:
@@ -117,6 +122,7 @@ class LoadedOutlier:
     device: str
     paged: bool
     artifact_index: Dict[str, Any]
+    backend: str = "custom"
 
 
 def inspect_model(model_ref: str, token: Optional[str] = None) -> Dict[str, Any]:
@@ -163,36 +169,58 @@ def load_model(
     resolved_ref = _canonical_model_ref(model_ref)
     model_dir = _resolve_model_dir(model_ref, token=token)
     config = _normalize_config(_read_config(model_dir))
-    device = device or _auto_device()
     n_experts = int(config.get("n_experts", 0))
     if paged is None:
         paged = config.get("model_type") == "outlier_moe" and n_experts > 0
 
     tokenizer = load_tokenizer(str(model_dir), token=token)
-    if paged:
-        model = OutlierPagedModel(
-            str(model_dir),
-            device=device,
-            max_experts_in_memory=max_experts_in_memory,
-            max_warm_cache=max_warm_cache,
-        )
-    else:
-        if config.get("model_type") == "outlier_moe":
-            model = OutlierForCausalLM.load_from_pretrained(str(model_dir), token=token)
-            if device != "cpu":
-                model = model.to(device)
-            model.eval()
-        else:
-            from transformers import AutoModelForCausalLM
+    last_error: Optional[Exception] = None
+    selected_device = _auto_device()
+    model = None
+    backend = "custom"
 
-            model = AutoModelForCausalLM.from_pretrained(
-                str(model_dir),
-                trust_remote_code=True,
-                torch_dtype="auto",
-            )
-            if device != "cpu":
-                model = model.to(device)
-            model.eval()
+    for candidate in _candidate_devices(device):
+        try:
+            selected_device = candidate
+            if paged:
+                backend = "paged"
+                model = OutlierPagedModel(
+                    str(model_dir),
+                    device=candidate,
+                    max_experts_in_memory=max_experts_in_memory,
+                    max_warm_cache=max_warm_cache,
+                )
+            else:
+                if config.get("model_type") == "outlier_moe":
+                    backend = "custom"
+                    model = OutlierForCausalLM.load_from_pretrained(str(model_dir), token=token)
+                    if candidate != "cpu":
+                        model = model.to(candidate)
+                    model.eval()
+                else:
+                    from transformers import AutoModelForCausalLM
+
+                    backend = "hf"
+                    dtype = torch.float16 if candidate == "mps" else "auto"
+                    model = AutoModelForCausalLM.from_pretrained(
+                        str(model_dir),
+                        trust_remote_code=True,
+                        dtype=dtype,
+                        low_cpu_mem_usage=True,
+                    )
+                    model = model.to(candidate)
+                    model.eval()
+            break
+        except Exception as exc:
+            last_error = exc
+            model = None
+            if device is not None or candidate == "cpu":
+                raise
+            warnings.warn(f"Falling back from {candidate} to cpu: {exc}")
+
+    if model is None:
+        assert last_error is not None
+        raise last_error
 
     return LoadedOutlier(
         model_ref=resolved_ref,
@@ -200,7 +228,8 @@ def load_model(
         config=config,
         tokenizer=tokenizer,
         model=model,
-        device=device,
+        device=selected_device,
         paged=bool(paged),
         artifact_index=_discover_artifacts(model_dir),
+        backend=backend,
     )

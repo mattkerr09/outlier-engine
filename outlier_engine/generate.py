@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from typing import Generator, Iterable, Optional
 
 import torch
 import torch.nn.functional as F
+from transformers import TextIteratorStreamer
 
 from .loader import LoadedOutlier
 
@@ -36,6 +38,49 @@ def _sample_next_token(
     return torch.multinomial(probs, num_samples=1)
 
 
+class _TokenTextIteratorStreamer(TextIteratorStreamer):
+    """Text streamer that also carries the raw generated token ids."""
+
+    def put(self, value):
+        if len(value.shape) > 1 and value.shape[0] > 1:
+            raise ValueError("TextIteratorStreamer only supports batch size 1")
+        elif len(value.shape) > 1:
+            value = value[0]
+
+        token_ids = value.tolist()
+        if self.skip_prompt and self.next_tokens_are_prompt:
+            self.next_tokens_are_prompt = False
+            return
+
+        self.token_cache.extend(token_ids)
+        text = self.tokenizer.decode(self.token_cache, **self.decode_kwargs)
+
+        if text.endswith("\n"):
+            printable_text = text[self.print_len :]
+            self.token_cache = []
+            self.print_len = 0
+        elif len(text) > 0 and self._is_chinese_char(ord(text[-1])):
+            printable_text = text[self.print_len :]
+            self.print_len += len(printable_text)
+        else:
+            printable_text = text[self.print_len : text.rfind(" ") + 1]
+            self.print_len += len(printable_text)
+
+        self.on_finalized_text((printable_text, token_ids))
+
+    def end(self):
+        if len(self.token_cache) > 0:
+            text = self.tokenizer.decode(self.token_cache, **self.decode_kwargs)
+            printable_text = text[self.print_len :]
+            self.token_cache = []
+            self.print_len = 0
+        else:
+            printable_text = ""
+
+        self.next_tokens_are_prompt = True
+        self.on_finalized_text((printable_text, []), stream_end=True)
+
+
 def stream_generate(
     loaded: LoadedOutlier,
     prompt: str,
@@ -56,6 +101,64 @@ def stream_generate(
     output_file = file
     debug_file = verbose_file if verbose_file is not None else sys.stderr
     input_ids = torch.tensor([prompt_ids], dtype=torch.long, device=loaded.model.device if hasattr(loaded.model, "device") else loaded.device)
+
+    if getattr(loaded, "backend", "custom") == "hf":
+        hf_tokenizer = getattr(tokenizer, "_tok", tokenizer)
+        attention_mask = torch.ones_like(input_ids, device=input_ids.device)
+        streamer = _TokenTextIteratorStreamer(
+            hf_tokenizer,
+            skip_prompt=True,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )
+        generation_kwargs = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "max_new_tokens": max_tokens,
+            "use_cache": True,
+            "streamer": streamer,
+            "pad_token_id": hf_tokenizer.pad_token_id or hf_tokenizer.eos_token_id,
+        }
+        if temperature == 0.0:
+            generation_kwargs["do_sample"] = False
+        else:
+            generation_kwargs["do_sample"] = True
+            generation_kwargs["temperature"] = temperature
+            generation_kwargs["top_p"] = top_p
+
+        error: dict[str, BaseException] = {}
+
+        def _run_generate() -> None:
+            try:
+                loaded.model.generate(**generation_kwargs)
+            except BaseException as exc:  # pragma: no cover - streamed exception path
+                error["exception"] = exc
+                streamer.end()
+
+        thread = threading.Thread(target=_run_generate, daemon=True)
+        thread.start()
+
+        generated_tokens = 0
+        for item in streamer:
+            delta, token_ids = item if isinstance(item, tuple) else (item, [])
+            generated_tokens += len(token_ids)
+            if verbose and token_ids:
+                print(
+                    f"[token_ids={token_ids} delta={delta!r}]",
+                    file=debug_file,
+                    flush=True,
+                )
+            if delta and output_file is not None:
+                output_file.write(delta)
+                output_file.flush()
+            if delta:
+                yield delta
+
+        thread.join()
+        if "exception" in error:
+            raise RuntimeError("HF generation failed") from error["exception"]
+        return {"tokens": generated_tokens}
+
     tokens = input_ids
     generated_ids: list[int] = []
     previous_text = ""
@@ -96,7 +199,7 @@ def stream_generate(
             if tokens.shape[1] >= loaded.config.get("max_seq_len", 4096):
                 break
 
-    return tokens
+    return {"tokens": len(generated_ids), "token_ids": generated_ids}
 
 
 def generate_text(
