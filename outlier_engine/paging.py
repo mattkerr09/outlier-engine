@@ -87,6 +87,11 @@ def _profile_enabled() -> bool:
     return bool(os.environ.get("OUTLIER_PROFILE"))
 
 
+def _batched_enabled() -> bool:
+    """OUTLIER_BATCHED=1 (default ON) — use batched GEMM in MoE forward."""
+    return os.environ.get("OUTLIER_BATCHED", "1").strip() != "0"
+
+
 def _sync_device(device: torch.device | str) -> None:
     dev = device if isinstance(device, torch.device) else torch.device(device)
     if dev.type == "mps":
@@ -708,15 +713,25 @@ def _run_expert(x: torch.Tensor, w: _ExpertWeights) -> torch.Tensor:
 
 
 def _run_single_token_experts_batched(x: torch.Tensor, experts: list[_ExpertWeights]) -> torch.Tensor:
-    """Run a small set of dequantized device experts together for one-token decode."""
+    """
+    Run a small set of dequantized device experts as a single batched GEMM.
+
+    OUTLIER-ENGINE-BATCHED-GEMM-001: 4 kernel launches for all experts combined
+    vs. 5 × n_experts in the sequential path.
+
+    Fallback to sequential when OUTLIER_BATCHED=0 or experts not all on device.
+    """
     if not experts:
         raise ValueError("Expected at least one expert for batched execution.")
     if len(experts) == 1:
-        return _run_expert(x, experts[0])
+        # _run_expert returns [batch, H]; wrap to [1, H] == [E, H] for consistency
+        out = _run_expert(x, experts[0])
+        return out if out.dim() == 2 else out.unsqueeze(0)
 
     first = experts[0]
     if (
-        first.gate_w.device.type == "cpu"
+        not _batched_enabled()
+        or first.gate_w.device.type == "cpu"
         or not all(w.dequantized and w.gate_w.device == first.gate_w.device for w in experts)
     ):
         return torch.cat([_run_expert(x, expert) for expert in experts], dim=0)
@@ -725,14 +740,20 @@ def _run_single_token_experts_batched(x: torch.Tensor, experts: list[_ExpertWeig
     x_dev = x if (x.dtype == compute_dtype and x.device == first.gate_w.device) else x.to(
         device=first.gate_w.device, dtype=compute_dtype
     )
-    x_vec = x_dev.squeeze(0)
-    gate_w = torch.stack([expert.gate_w for expert in experts], dim=0)
-    up_w = torch.stack([expert.up_w for expert in experts], dim=0)
-    down_w = torch.stack([expert.down_w for expert in experts], dim=0)
-    gate = torch.matmul(gate_w, x_vec.unsqueeze(-1)).squeeze(-1)
-    up = torch.matmul(up_w, x_vec.unsqueeze(-1)).squeeze(-1)
-    hidden = F.silu(gate) * up
-    return torch.matmul(down_w, hidden.unsqueeze(-1)).squeeze(-1)
+    # x_vec: [H]  →  x_col: [H, 1] for batched matmul [E, I, H] × [H, 1] = [E, I, 1]
+    x_col = x_dev.squeeze(0).unsqueeze(-1)
+
+    # GATHER: Python loop + torch.stack (no GPU kernel)
+    gate_w = torch.stack([e.gate_w for e in experts], dim=0)  # [E, I, H]
+    up_w   = torch.stack([e.up_w   for e in experts], dim=0)  # [E, I, H]
+    down_w = torch.stack([e.down_w for e in experts], dim=0)  # [E, H, I]
+
+    # BATCHED GEMM: 4 kernel launches total
+    gate_out = torch.matmul(gate_w, x_col).squeeze(-1)        # [E, I]
+    up_out   = torch.matmul(up_w,   x_col).squeeze(-1)        # [E, I]
+    act_out  = F.silu(gate_out) * up_out                      # [E, I]
+    down_out = torch.matmul(down_w, act_out.unsqueeze(-1)).squeeze(-1)  # [E, H]
+    return down_out  # [E, H]
 
 
 def _summarize_et_stats(routers: list[ETRouter] | None) -> Dict[str, object]:
@@ -827,14 +848,23 @@ class _HybridPagedMLP(nn.Module):
         shared_out = self.shared(x_flat.to(compute_dtype))
         expert_out = torch.zeros_like(shared_out)
 
-        if x_flat.shape[0] == 1 and len(used_expert_ids) > 1:
-            experts = [self.page_manager.get_expert(self.layer_idx, int(expert_idx)) for expert_idx in used_expert_ids]
+        # OUTLIER-ENGINE-BATCHED-GEMM-001: batched path for single-token decode
+        # Gate: OUTLIER_BATCHED=1 (default ON)
+        if _batched_enabled() and x_flat.shape[0] == 1 and len(used_expert_ids) >= 1:
+            experts = [self.page_manager.get_expert(self.layer_idx, int(eid)) for eid in used_expert_ids]
+            # batched_out: [E, H] — all experts computed in 4 kernel launches
             batched_out = _run_single_token_experts_batched(x_flat, experts).to(shared_out.dtype)
-            for row_idx, expert_idx in enumerate(used_expert_ids):
-                weight = (selected_w[0] * (selected_idx[0] == expert_idx).to(selected_w.dtype)).sum()
-                expert_out[0] += weight * batched_out[row_idx]
+
+            # Vectorized weighted combine — no Python loop over experts
+            # Build weight vector [E] then dot with expert outputs [E, H]
+            w_vec = torch.stack([
+                (selected_w[0] * (selected_idx[0] == eid).to(selected_w.dtype)).sum()
+                for eid in used_expert_ids
+            ]).to(dtype=batched_out.dtype, device=batched_out.device)  # [E]
+            expert_out[0] = (batched_out * w_vec.unsqueeze(-1)).sum(dim=0)  # [H]
             return (shared_out + expert_out).to(x.dtype).view(batch, seq_len, hidden_dim)
 
+        # Multi-token path (prefill) or OUTLIER_BATCHED=0: sequential per-expert loop
         for expert_idx in used_expert_ids:
             assignment = selected_idx == expert_idx
             token_mask = assignment.any(dim=-1)
@@ -1892,15 +1922,25 @@ class OutlierPagedModel(nn.Module):
                 expert_out = torch.zeros(
                     N, D, device=self.device, dtype=torch.float32
                 )
-                for e in used_expert_ids:
-                    assignment = (selected_idx == e)
-                    token_mask = assignment.any(dim=-1)
-                    if not token_mask.any():
-                        continue
-                    weights = (selected_w * assignment.to(selected_w.dtype)).sum(dim=-1, keepdim=True)
-                    w = self.load_expert(i, int(e))
-                    out = _run_expert(h_flat[token_mask], w)
-                    expert_out[token_mask] += weights[token_mask] * out
+
+                # OUTLIER-ENGINE-BATCHED-GEMM-001: single-token batched path
+                # Gate: OUTLIER_BATCHED=1 (default ON)
+                if _batched_enabled() and N == 1 and len(used_expert_ids) >= 1:
+                    _experts = [self.load_expert(i, int(e)) for e in used_expert_ids]
+                    batched_out = _run_single_token_experts_batched(h_flat, _experts)  # [E, D]
+                    for row_idx, e in enumerate(used_expert_ids):
+                        weight = (selected_w[0] * (selected_idx[0] == e).to(selected_w.dtype)).sum()
+                        expert_out[0] += float(weight) * batched_out[row_idx].to(torch.float32)
+                else:
+                    for e in used_expert_ids:
+                        assignment = (selected_idx == e)
+                        token_mask = assignment.any(dim=-1)
+                        if not token_mask.any():
+                            continue
+                        weights = (selected_w * assignment.to(selected_w.dtype)).sum(dim=-1, keepdim=True)
+                        w = self.load_expert(i, int(e))
+                        out = _run_expert(h_flat[token_mask], w)
+                        expert_out[token_mask] += weights[token_mask] * out
 
                 x = x + (shared_out + expert_out).to(x.dtype).view(B, L, D)
             else:

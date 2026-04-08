@@ -1,0 +1,14 @@
+device=mps
+sequential_launches_per_layer=8  (4 per expert × 2 experts)
+batched_launches_per_layer=4  (all 2 experts batched)
+new_BatchedExpertMLP_launches_per_layer=4
+
+=== Extrapolation to 17 MoE layers, top_k=2 ===
+sequential_total_launches_per_token=136
+batched_total_launches_per_token=68
+reduction_factor=2.0x
+
+=== Gather vs compute (n_experts=2, dim=128x512) ===
+gather_ms_avg=0.4146
+compute_ms_avg=0.9313
+gather_pct_of_total=30.8%
