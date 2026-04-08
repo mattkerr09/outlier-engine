@@ -1,0 +1,52 @@
+Delta compression experiment
+model_ref=Outlier-Ai/Outlier-10B
+sampled_layers=[0, 8, 16]
+log_path=/Users/matthewkerr/outlier-engine/experiments/delta_compression/experiment_output.log
+
+model_dir=/Users/matthewkerr/.cache/huggingface/hub/models--Outlier-Ai--Outlier-10B/snapshots/11ff21cad8faa97dafab2362f20bf790da7f3ae3
+hidden_size=3584 intermediate_size=18944 layers=28 n_experts=8
+uniqueness_check:
+  - layer 0: 1 unique routed expert payloads across 8 experts
+  - layer 8: 1 unique routed expert payloads across 8 experts
+  - layer 16: 1 unique routed expert payloads across 8 experts
+
+[layer 0] starting
+[01/24] layer=00 expert=00 | sparsity= 45.32% | recon_l2=92.3690 | cos=0.877697 | full_tq10=  38.85 MiB | delta_tq10=  38.85 MiB | ratio=1.000x | rle_tq10=n/a | elapsed=1.3s
+[02/24] layer=00 expert=01 | sparsity= 45.32% | recon_l2=92.3690 | cos=0.877697 | full_tq10=  38.85 MiB | delta_tq10=  38.85 MiB | ratio=1.000x | rle_tq10=n/a | elapsed=0.7s
+[03/24] layer=00 expert=02 | sparsity= 45.32% | recon_l2=92.3690 | cos=0.877697 | full_tq10=  38.85 MiB | delta_tq10=  38.85 MiB | ratio=1.000x | rle_tq10=n/a | elapsed=0.7s
+[04/24] layer=00 expert=03 | sparsity= 45.32% | recon_l2=92.3690 | cos=0.877697 | full_tq10=  38.85 MiB | delta_tq10=  38.85 MiB | ratio=1.000x | rle_tq10=n/a | elapsed=0.7s
+[05/24] layer=00 expert=04 | sparsity= 45.32% | recon_l2=92.3690 | cos=0.877697 | full_tq10=  38.85 MiB | delta_tq10=  38.85 MiB | ratio=1.000x | rle_tq10=n/a | elapsed=0.7s
+[06/24] layer=00 expert=05 | sparsity= 45.32% | recon_l2=92.3690 | cos=0.877697 | full_tq10=  38.85 MiB | delta_tq10=  38.85 MiB | ratio=1.000x | rle_tq10=n/a | elapsed=0.7s
+[07/24] layer=00 expert=06 | sparsity= 45.32% | recon_l2=92.3690 | cos=0.877697 | full_tq10=  38.85 MiB | delta_tq10=  38.85 MiB | ratio=1.000x | rle_tq10=n/a | elapsed=0.8s
+[08/24] layer=00 expert=07 | sparsity= 45.32% | recon_l2=92.3690 | cos=0.877697 | full_tq10=  38.85 MiB | delta_tq10=  38.85 MiB | ratio=1.000x | rle_tq10=n/a | elapsed=0.7s
+
+[layer 8] starting
+[09/24] layer=08 expert=00 | sparsity= 35.46% | recon_l2=83.8699 | cos=0.929094 | full_tq10=  38.85 MiB | delta_tq10=  38.85 MiB | ratio=1.000x | rle_tq10=n/a | elapsed=1.1s
+[10/24] layer=08 expert=01 | sparsity= 35.46% | recon_l2=83.8699 | cos=0.929094 | full_tq10=  38.85 MiB | delta_tq10=  38.85 MiB | ratio=1.000x | rle_tq10=n/a | elapsed=0.7s
+[11/24] layer=08 expert=02 | sparsity= 35.46% | recon_l2=83.8699 | cos=0.929094 | full_tq10=  38.85 MiB | delta_tq10=  38.85 MiB | ratio=1.000x | rle_tq10=n/a | elapsed=0.9s
+[12/24] layer=08 expert=03 | sparsity= 35.46% | recon_l2=83.8699 | cos=0.929094 | full_tq10=  38.85 MiB | delta_tq10=  38.85 MiB | ratio=1.000x | rle_tq10=n/a | elapsed=1.0s
+[13/24] layer=08 expert=04 | sparsity= 35.46% | recon_l2=83.8699 | cos=0.929094 | full_tq10=  38.85 MiB | delta_tq10=  38.85 MiB | ratio=1.000x | rle_tq10=n/a | elapsed=1.0s
+[14/24] layer=08 expert=05 | sparsity= 35.46% | recon_l2=83.8699 | cos=0.929094 | full_tq10=  38.85 MiB | delta_tq10=  38.85 MiB | ratio=1.000x | rle_tq10=n/a | elapsed=1.1s
+[15/24] layer=08 expert=06 | sparsity= 35.46% | recon_l2=83.8699 | cos=0.929094 | full_tq10=  38.85 MiB | delta_tq10=  38.85 MiB | ratio=1.000x | rle_tq10=n/a | elapsed=1.2s
+[16/24] layer=08 expert=07 | sparsity= 35.46% | recon_l2=83.8699 | cos=0.929094 | full_tq10=  38.85 MiB | delta_tq10=  38.85 MiB | ratio=1.000x | rle_tq10=n/a | elapsed=1.0s
+
+[layer 16] starting
+[17/24] layer=16 expert=00 | sparsity= 35.76% | recon_l2=85.3113 | cos=0.926298 | full_tq10=  38.85 MiB | delta_tq10=  38.85 MiB | ratio=1.000x | rle_tq10=n/a | elapsed=1.6s
+[18/24] layer=16 expert=01 | sparsity= 35.76% | recon_l2=85.3113 | cos=0.926298 | full_tq10=  38.85 MiB | delta_tq10=  38.85 MiB | ratio=1.000x | rle_tq10=n/a | elapsed=1.0s
+[19/24] layer=16 expert=02 | sparsity= 35.76% | recon_l2=85.3113 | cos=0.926298 | full_tq10=  38.85 MiB | delta_tq10=  38.85 MiB | ratio=1.000x | rle_tq10=n/a | elapsed=0.9s
+[20/24] layer=16 expert=03 | sparsity= 35.76% | recon_l2=85.3113 | cos=0.926298 | full_tq10=  38.85 MiB | delta_tq10=  38.85 MiB | ratio=1.000x | rle_tq10=n/a | elapsed=1.0s
+[21/24] layer=16 expert=04 | sparsity= 35.76% | recon_l2=85.3113 | cos=0.926298 | full_tq10=  38.85 MiB | delta_tq10=  38.85 MiB | ratio=1.000x | rle_tq10=n/a | elapsed=0.9s
+[22/24] layer=16 expert=05 | sparsity= 35.76% | recon_l2=85.3113 | cos=0.926298 | full_tq10=  38.85 MiB | delta_tq10=  38.85 MiB | ratio=1.000x | rle_tq10=n/a | elapsed=0.9s
+[23/24] layer=16 expert=06 | sparsity= 35.76% | recon_l2=85.3113 | cos=0.926298 | full_tq10=  38.85 MiB | delta_tq10=  38.85 MiB | ratio=1.000x | rle_tq10=n/a | elapsed=0.8s
+[24/24] layer=16 expert=07 | sparsity= 35.76% | recon_l2=85.3113 | cos=0.926298 | full_tq10=  38.85 MiB | delta_tq10=  38.85 MiB | ratio=1.000x | rle_tq10=n/a | elapsed=0.8s
+
+Averages
+experts=24
+avg_sparsity=38.8453%
+avg_reconstruction_error=87.183378
+avg_cosine_similarity=0.91102984
+avg_compression_ratio=1.000000x
+avg_rle_compression_ratio=n/a
+rle_eligible_experts=0
+total_elapsed=30.8s
+results_path=/Users/matthewkerr/outlier-engine/experiments/delta_compression/results.md
