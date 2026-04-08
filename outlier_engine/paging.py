@@ -64,6 +64,7 @@ import torch.nn.functional as F
 from .model import (
     _RMSNorm,
     _Attention,
+    KVCache,
     _SwiGLU,
     _TernarySwiGLU,
     _causal_mask,
@@ -116,17 +117,27 @@ class _GQAAttention(nn.Module):
         )
 
     def forward(
-        self, x: torch.Tensor, mask: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
+        self,
+        x: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        use_cache: bool = False,
+    ) -> torch.Tensor | Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         B, L, D = x.shape
         H, H_kv, d = self.n_heads, self.n_kv_heads, self.head_dim
+        past_k, past_v = past_key_value if past_key_value is not None else (None, None)
+        past_len = 0 if past_k is None else past_k.shape[2]
 
         q = self.q_proj(x).view(B, L, H,    d).transpose(1, 2)
         k = self.k_proj(x).view(B, L, H_kv, d).transpose(1, 2)
         v = self.v_proj(x).view(B, L, H_kv, d).transpose(1, 2)
 
-        q = self.rope(q)
-        k = self.rope(k)
+        q = self.rope(q, position_offset=past_len)
+        k = self.rope(k, position_offset=past_len)
+
+        if past_k is not None:
+            k = torch.cat([past_k, k], dim=2)
+            v = torch.cat([past_v, v], dim=2)
 
         if self.n_rep > 1:
             k = k.repeat_interleave(self.n_rep, dim=1)
@@ -137,7 +148,12 @@ class _GQAAttention(nn.Module):
             scores = scores + mask
         attn = F.softmax(scores.float(), dim=-1).to(x.dtype)
         out  = torch.matmul(attn, v).transpose(1, 2).contiguous().view(B, L, D)
-        return self.o_proj(out)
+        out = self.o_proj(out)
+        if use_cache:
+            cached_k = k if self.n_rep == 1 else k[:, :: self.n_rep, :, :].contiguous()
+            cached_v = v if self.n_rep == 1 else v[:, :: self.n_rep, :, :].contiguous()
+            return out, (cached_k, cached_v)
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -312,6 +328,17 @@ class _ExpertWeights:
         if self.packed:
             unpacked = self.unpack_to_int8()
             return unpacked.run(x)
+
+        if x.device.type != "cpu":
+            compute_dtype = torch.float16
+            x_dev = x.to(compute_dtype)
+            gate_w = self.gate_w.to(compute_dtype) * self.gate_s.to(compute_dtype)
+            up_w = self.up_w.to(compute_dtype) * self.up_s.to(compute_dtype)
+            down_w = self.down_w.to(compute_dtype) * self.down_s.to(compute_dtype)
+            gate = F.silu(F.linear(x_dev, gate_w))
+            up = F.linear(x_dev, up_w)
+            return F.linear(gate * up, down_w).float()
+
         from .ternary_ops import ternary_matmul_direct
         gate = F.silu(ternary_matmul_direct(x, self.gate_w, self.gate_s))
         up   = ternary_matmul_direct(x, self.up_w, self.up_s)
@@ -859,7 +886,7 @@ class OutlierPagedModel(nn.Module):
             self._cache_evictions += 1
             # On CPU there is no device/host boundary, so avoid wasteful
             # pack/unpack churn and keep the expert in native int8 form.
-            cached_w = evicted_w.cpu() if on_cpu else evicted_w.cpu().pack_2bit()
+            cached_w = evicted_w.cpu() if on_cpu else evicted_w.cpu().pack_tq10()
             self._add_to_warm_cache(evicted_key, cached_w)
 
         # ── Load from warm cache or cold disk ─────────────────────────
@@ -976,7 +1003,12 @@ class OutlierPagedModel(nn.Module):
     # Forward
     # ------------------------------------------------------------------
 
-    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        kv_cache: Optional[KVCache] = None,
+        use_cache: bool = False,
+    ) -> torch.Tensor:
         """
         Args:
             input_ids: [B, L] integer token ids (on self.device)
@@ -987,7 +1019,8 @@ class OutlierPagedModel(nn.Module):
         B, L, D = x.shape
 
         causal_mask: Optional[torch.Tensor] = None
-        if L > 1:
+        cache_empty = kv_cache is None or not kv_cache.cache
+        if cache_empty and L > 1:
             causal_mask = _causal_mask(L, device=input_ids.device, dtype=x.dtype)
 
         for i, layer in enumerate(self.layers):
@@ -1017,7 +1050,21 @@ class OutlierPagedModel(nn.Module):
 
             # ── Attention (always device-resident) ────────────────────────
             # On CUDA/MPS this overlaps with the prefetch kicked off above.
-            x = x + layer.attn(layer.attn_norm(x), mask=causal_mask)
+            attn_input = layer.attn_norm(x)
+            past = kv_cache.get(i) if kv_cache is not None else (None, None)
+            attn_out = layer.attn(
+                attn_input,
+                mask=causal_mask,
+                past_key_value=past if past[0] is not None else None,
+                use_cache=use_cache,
+            )
+            if use_cache:
+                attn_delta, present = attn_out
+                if kv_cache is not None:
+                    kv_cache.set(i, present[0], present[1])
+            else:
+                attn_delta = attn_out
+            x = x + attn_delta
 
             # ── FFN ───────────────────────────────────────────────────────
             h = layer.ffn_norm(x)
@@ -1096,9 +1143,20 @@ class OutlierPagedModel(nn.Module):
         self._disk_load_s     = 0.0
 
         tokens = input_ids
+        kv_cache = KVCache()
+
+        prompt = input_ids
+        logits: Optional[torch.Tensor] = None
+        for pos in range(prompt.shape[1]):
+            logits = self.forward(
+                prompt[:, pos : pos + 1],
+                kv_cache=kv_cache,
+                use_cache=True,
+            )
+        if logits is None:
+            raise RuntimeError("Paged generation received an empty prompt.")
 
         for _ in range(max_new_tokens):
-            logits      = self.forward(tokens)
             next_logits = logits[:, -1, :]
 
             if temperature == 0.0:
@@ -1108,6 +1166,7 @@ class OutlierPagedModel(nn.Module):
                 next_token = torch.multinomial(probs, num_samples=1)
 
             tokens = torch.cat([tokens, next_token], dim=1)
+            logits = self.forward(next_token, kv_cache=kv_cache, use_cache=True)
 
             if tokens.shape[1] >= self.max_seq_len:
                 break

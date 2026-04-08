@@ -84,13 +84,14 @@ class _RotaryEmbedding(nn.Module):
         self.register_buffer("sin_cached", emb.sin()[None, None], persistent=False)
         self._cached_seq_len = seq_len
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, position_offset: int = 0) -> torch.Tensor:
         """x: [B, H, L, head_dim]"""
         seq_len = x.shape[2]
-        if seq_len > self._cached_seq_len:
-            self._build_cache(seq_len)
-        cos = self.cos_cached[:, :, :seq_len]
-        sin = self.sin_cached[:, :, :seq_len]
+        end = position_offset + seq_len
+        if end > self._cached_seq_len:
+            self._build_cache(end)
+        cos = self.cos_cached[:, :, position_offset:end]
+        sin = self.sin_cached[:, :, position_offset:end]
         half = x.shape[-1] // 2
         rotated = torch.cat([-x[..., half:], x[..., :half]], dim=-1)
         return x * cos + rotated * sin
@@ -99,6 +100,22 @@ class _RotaryEmbedding(nn.Module):
 def _causal_mask(seq_len: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
     m = torch.full((seq_len, seq_len), float("-inf"), device=device, dtype=dtype)
     return torch.triu(m, diagonal=1)
+
+
+class KVCache:
+    """Minimal per-layer KV cache for autoregressive generation."""
+
+    def __init__(self) -> None:
+        self.cache: Dict[int, Tuple[torch.Tensor, torch.Tensor]] = {}
+
+    def get(self, layer_idx: int) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+        return self.cache.get(layer_idx, (None, None))
+
+    def set(self, layer_idx: int, key_states: torch.Tensor, value_states: torch.Tensor) -> None:
+        self.cache[layer_idx] = (key_states, value_states)
+
+    def clear(self) -> None:
+        self.cache.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -118,20 +135,34 @@ class _Attention(nn.Module):
         self.o_proj = _NoInitLinear(hidden_dim, hidden_dim, bias=False)
         self.rope = _RotaryEmbedding(self.head_dim, base=rope_theta, max_seq_len=max_seq_len)
 
-    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        use_cache: bool = False,
+    ) -> torch.Tensor | Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         B, L, D = x.shape
         H, d = self.n_heads, self.head_dim
+        past_k, past_v = past_key_value if past_key_value is not None else (None, None)
+        past_len = 0 if past_k is None else past_k.shape[2]
         q = self.q_proj(x).view(B, L, H, d).transpose(1, 2)
         k = self.k_proj(x).view(B, L, H, d).transpose(1, 2)
         v = self.v_proj(x).view(B, L, H, d).transpose(1, 2)
-        q = self.rope(q)
-        k = self.rope(k)
+        q = self.rope(q, position_offset=past_len)
+        k = self.rope(k, position_offset=past_len)
+        if past_k is not None:
+            k = torch.cat([past_k, k], dim=2)
+            v = torch.cat([past_v, v], dim=2)
         scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
         if mask is not None:
             scores = scores + mask
         attn = F.softmax(scores.float(), dim=-1).to(x.dtype)
         out = torch.matmul(attn, v).transpose(1, 2).contiguous().view(B, L, D)
-        return self.o_proj(out)
+        out = self.o_proj(out)
+        if use_cache:
+            return out, (k, v)
+        return out
 
 
 # ---------------------------------------------------------------------------
