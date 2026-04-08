@@ -1,0 +1,172 @@
+found 672 ternary expert files in /Users/matthewkerr/outlier-engine/packed_experts
+sampling 12 files (every 56th)
+
+[1/12] base_model_layers_0_mlp_experts_0_down_ternary.bin  (13.6 MB, entropy=7.8238 bits/byte)
+  raw_bpw=1.600  (theoretical TQ1_0 ceiling: 1.585 bpw)
+  zstd-1             13.6 MB →   13.3 MB ratio=1.018x  bpw=1.572  comp=1.06 GB/s  decomp=1.15 GB/s  rt=✓  fast= 
+  zstd-3             13.6 MB →   13.5 MB ratio=1.007x  bpw=1.589  comp=0.59 GB/s  decomp=2.64 GB/s  rt=✓  fast= 
+  zstd-6             13.6 MB →   13.3 MB ratio=1.018x  bpw=1.572  comp=0.96 GB/s  decomp=1.16 GB/s  rt=✓  fast= 
+  zstd-9             13.6 MB →   13.3 MB ratio=1.018x  bpw=1.572  comp=0.80 GB/s  decomp=1.16 GB/s  rt=✓  fast= 
+  lz4-default        13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=3.50 GB/s  decomp=15.16 GB/s  rt=✓  fast=✓
+  lz4-fast4          13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=0.06 GB/s  decomp=17.39 GB/s  rt=✓  fast=✓
+  lz4-hc9            13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=0.05 GB/s  decomp=16.59 GB/s  rt=✓  fast=✓
+  zlib-6             13.6 MB →   13.4 MB ratio=1.016x  bpw=1.575  comp=0.05 GB/s  decomp=0.43 GB/s  rt=✓  fast= 
+
+[2/12] base_model_layers_11_mlp_experts_2_up_ternary.bin  (13.6 MB, entropy=7.9198 bits/byte)
+  raw_bpw=1.600  (theoretical TQ1_0 ceiling: 1.585 bpw)
+  zstd-1             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=6.67 GB/s  decomp=31.75 GB/s  rt=✓  fast=✓
+  zstd-3             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=7.58 GB/s  decomp=37.88 GB/s  rt=✓  fast=✓
+  zstd-6             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=4.75 GB/s  decomp=42.91 GB/s  rt=✓  fast=✓
+  zstd-9             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=4.51 GB/s  decomp=34.12 GB/s  rt=✓  fast=✓
+  lz4-default        13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=3.59 GB/s  decomp=16.29 GB/s  rt=✓  fast=✓
+  lz4-fast4          13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=0.06 GB/s  decomp=17.37 GB/s  rt=✓  fast=✓
+  lz4-hc9            13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=0.06 GB/s  decomp=18.34 GB/s  rt=✓  fast=✓
+  zlib-6             13.6 MB →   13.5 MB ratio=1.006x  bpw=1.590  comp=0.05 GB/s  decomp=0.45 GB/s  rt=✓  fast= 
+
+[3/12] base_model_layers_13_mlp_experts_5_gate_ternary.bin  (13.6 MB, entropy=7.9207 bits/byte)
+  raw_bpw=1.600  (theoretical TQ1_0 ceiling: 1.585 bpw)
+  zstd-1             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=5.57 GB/s  decomp=31.17 GB/s  rt=✓  fast=✓
+  zstd-3             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=5.14 GB/s  decomp=36.83 GB/s  rt=✓  fast=✓
+  zstd-6             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=3.92 GB/s  decomp=35.90 GB/s  rt=✓  fast=✓
+  zstd-9             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=3.62 GB/s  decomp=40.97 GB/s  rt=✓  fast=✓
+  lz4-default        13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=3.52 GB/s  decomp=17.70 GB/s  rt=✓  fast=✓
+  lz4-fast4          13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=0.06 GB/s  decomp=17.34 GB/s  rt=✓  fast=✓
+  lz4-hc9            13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=0.06 GB/s  decomp=17.99 GB/s  rt=✓  fast=✓
+  zlib-6             13.6 MB →   13.5 MB ratio=1.006x  bpw=1.590  comp=0.05 GB/s  decomp=0.45 GB/s  rt=✓  fast= 
+
+[4/12] base_model_layers_16_mlp_experts_0_down_ternary.bin  (13.6 MB, entropy=7.9210 bits/byte)
+  raw_bpw=1.600  (theoretical TQ1_0 ceiling: 1.585 bpw)
+  zstd-1             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=6.09 GB/s  decomp=29.88 GB/s  rt=✓  fast=✓
+  zstd-3             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=6.07 GB/s  decomp=37.50 GB/s  rt=✓  fast=✓
+  zstd-6             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=4.13 GB/s  decomp=40.41 GB/s  rt=✓  fast=✓
+  zstd-9             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=3.97 GB/s  decomp=37.50 GB/s  rt=✓  fast=✓
+  lz4-default        13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=3.55 GB/s  decomp=18.22 GB/s  rt=✓  fast=✓
+  lz4-fast4          13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=0.06 GB/s  decomp=18.05 GB/s  rt=✓  fast=✓
+  lz4-hc9            13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=0.05 GB/s  decomp=16.77 GB/s  rt=✓  fast=✓
+  zlib-6             13.6 MB →   13.5 MB ratio=1.006x  bpw=1.590  comp=0.05 GB/s  decomp=0.44 GB/s  rt=✓  fast= 
+
+[5/12] base_model_layers_18_mlp_experts_2_up_ternary.bin  (13.6 MB, entropy=7.9220 bits/byte)
+  raw_bpw=1.600  (theoretical TQ1_0 ceiling: 1.585 bpw)
+  zstd-1             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=6.98 GB/s  decomp=32.31 GB/s  rt=✓  fast=✓
+  zstd-3             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=7.25 GB/s  decomp=41.79 GB/s  rt=✓  fast=✓
+  zstd-6             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=4.56 GB/s  decomp=43.03 GB/s  rt=✓  fast=✓
+  zstd-9             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=4.23 GB/s  decomp=41.20 GB/s  rt=✓  fast=✓
+  lz4-default        13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=3.51 GB/s  decomp=16.40 GB/s  rt=✓  fast=✓
+  lz4-fast4          13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=0.06 GB/s  decomp=17.84 GB/s  rt=✓  fast=✓
+  lz4-hc9            13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=0.06 GB/s  decomp=17.96 GB/s  rt=✓  fast=✓
+  zlib-6             13.6 MB →   13.5 MB ratio=1.006x  bpw=1.591  comp=0.05 GB/s  decomp=0.45 GB/s  rt=✓  fast= 
+
+[6/12] base_model_layers_1_mlp_experts_5_gate_ternary.bin  (13.6 MB, entropy=5.9776 bits/byte)
+  raw_bpw=1.600  (theoretical TQ1_0 ceiling: 1.585 bpw)
+  zstd-1             13.6 MB →    8.7 MB ratio=1.565x  bpw=1.022  comp=0.79 GB/s  decomp=1.31 GB/s  rt=✓  fast= 
+  zstd-3             13.6 MB →    8.4 MB ratio=1.614x  bpw=0.991  comp=0.50 GB/s  decomp=1.23 GB/s  rt=✓  fast= 
+  zstd-6             13.6 MB →    8.3 MB ratio=1.638x  bpw=0.977  comp=0.18 GB/s  decomp=1.43 GB/s  rt=✓  fast= 
+  zstd-9             13.6 MB →    8.2 MB ratio=1.656x  bpw=0.966  comp=0.14 GB/s  decomp=1.50 GB/s  rt=✓  fast= 
+  lz4-default        13.6 MB →    9.8 MB ratio=1.390x  bpw=1.151  comp=1.06 GB/s  decomp=5.36 GB/s  rt=✓  fast=✓
+  lz4-fast4          13.6 MB →    9.2 MB ratio=1.474x  bpw=1.085  comp=0.08 GB/s  decomp=7.87 GB/s  rt=✓  fast=✓
+  lz4-hc9            13.6 MB →    9.1 MB ratio=1.497x  bpw=1.069  comp=0.03 GB/s  decomp=8.34 GB/s  rt=✓  fast=✓
+  zlib-6             13.6 MB →    9.0 MB ratio=1.505x  bpw=1.063  comp=0.05 GB/s  decomp=0.58 GB/s  rt=✓  fast= 
+
+[7/12] base_model_layers_22_mlp_experts_0_down_ternary.bin  (13.6 MB, entropy=7.9207 bits/byte)
+  raw_bpw=1.600  (theoretical TQ1_0 ceiling: 1.585 bpw)
+  zstd-1             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=4.76 GB/s  decomp=31.50 GB/s  rt=✓  fast=✓
+  zstd-3             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=5.17 GB/s  decomp=30.69 GB/s  rt=✓  fast=✓
+  zstd-6             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=3.77 GB/s  decomp=34.09 GB/s  rt=✓  fast=✓
+  zstd-9             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=3.02 GB/s  decomp=36.56 GB/s  rt=✓  fast=✓
+  lz4-default        13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=3.60 GB/s  decomp=16.44 GB/s  rt=✓  fast=✓
+  lz4-fast4          13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=0.06 GB/s  decomp=16.42 GB/s  rt=✓  fast=✓
+  lz4-hc9            13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=0.06 GB/s  decomp=18.30 GB/s  rt=✓  fast=✓
+  zlib-6             13.6 MB →   13.5 MB ratio=1.007x  bpw=1.589  comp=0.05 GB/s  decomp=0.45 GB/s  rt=✓  fast= 
+
+[8/12] base_model_layers_24_mlp_experts_2_up_ternary.bin  (13.6 MB, entropy=7.9189 bits/byte)
+  raw_bpw=1.600  (theoretical TQ1_0 ceiling: 1.585 bpw)
+  zstd-1             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=6.12 GB/s  decomp=31.52 GB/s  rt=✓  fast=✓
+  zstd-3             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=6.01 GB/s  decomp=38.09 GB/s  rt=✓  fast=✓
+  zstd-6             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=4.51 GB/s  decomp=32.82 GB/s  rt=✓  fast=✓
+  zstd-9             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=3.51 GB/s  decomp=37.86 GB/s  rt=✓  fast=✓
+  lz4-default        13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=3.54 GB/s  decomp=17.66 GB/s  rt=✓  fast=✓
+  lz4-fast4          13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=0.05 GB/s  decomp=16.34 GB/s  rt=✓  fast=✓
+  lz4-hc9            13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=0.06 GB/s  decomp=18.24 GB/s  rt=✓  fast=✓
+  zlib-6             13.6 MB →   13.5 MB ratio=1.006x  bpw=1.590  comp=0.05 GB/s  decomp=0.45 GB/s  rt=✓  fast= 
+
+[9/12] base_model_layers_26_mlp_experts_5_gate_ternary.bin  (13.6 MB, entropy=7.9190 bits/byte)
+  raw_bpw=1.600  (theoretical TQ1_0 ceiling: 1.585 bpw)
+  zstd-1             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=6.09 GB/s  decomp=36.14 GB/s  rt=✓  fast=✓
+  zstd-3             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=6.83 GB/s  decomp=31.64 GB/s  rt=✓  fast=✓
+  zstd-6             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=4.59 GB/s  decomp=43.30 GB/s  rt=✓  fast=✓
+  zstd-9             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=4.28 GB/s  decomp=32.06 GB/s  rt=✓  fast=✓
+  lz4-default        13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=3.57 GB/s  decomp=17.93 GB/s  rt=✓  fast=✓
+  lz4-fast4          13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=0.06 GB/s  decomp=17.91 GB/s  rt=✓  fast=✓
+  lz4-hc9            13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=0.06 GB/s  decomp=18.01 GB/s  rt=✓  fast=✓
+  zlib-6             13.6 MB →   13.5 MB ratio=1.006x  bpw=1.590  comp=0.05 GB/s  decomp=0.45 GB/s  rt=✓  fast= 
+
+[10/12] base_model_layers_3_mlp_experts_0_down_ternary.bin  (13.6 MB, entropy=7.9222 bits/byte)
+  raw_bpw=1.600  (theoretical TQ1_0 ceiling: 1.585 bpw)
+  zstd-1             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=6.13 GB/s  decomp=40.44 GB/s  rt=✓  fast=✓
+  zstd-3             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=6.70 GB/s  decomp=43.00 GB/s  rt=✓  fast=✓
+  zstd-6             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=4.39 GB/s  decomp=34.89 GB/s  rt=✓  fast=✓
+  zstd-9             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=3.95 GB/s  decomp=36.24 GB/s  rt=✓  fast=✓
+  lz4-default        13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=3.55 GB/s  decomp=16.51 GB/s  rt=✓  fast=✓
+  lz4-fast4          13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=0.06 GB/s  decomp=16.34 GB/s  rt=✓  fast=✓
+  lz4-hc9            13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=0.06 GB/s  decomp=18.23 GB/s  rt=✓  fast=✓
+  zlib-6             13.6 MB →   13.5 MB ratio=1.006x  bpw=1.590  comp=0.05 GB/s  decomp=0.45 GB/s  rt=✓  fast= 
+
+[11/12] base_model_layers_5_mlp_experts_2_up_ternary.bin  (13.6 MB, entropy=7.9211 bits/byte)
+  raw_bpw=1.600  (theoretical TQ1_0 ceiling: 1.585 bpw)
+  zstd-1             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=6.74 GB/s  decomp=34.41 GB/s  rt=✓  fast=✓
+  zstd-3             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=6.25 GB/s  decomp=33.54 GB/s  rt=✓  fast=✓
+  zstd-6             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=4.48 GB/s  decomp=37.55 GB/s  rt=✓  fast=✓
+  zstd-9             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=3.86 GB/s  decomp=41.98 GB/s  rt=✓  fast=✓
+  lz4-default        13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=3.54 GB/s  decomp=16.88 GB/s  rt=✓  fast=✓
+  lz4-fast4          13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=0.06 GB/s  decomp=16.80 GB/s  rt=✓  fast=✓
+  lz4-hc9            13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=0.06 GB/s  decomp=17.46 GB/s  rt=✓  fast=✓
+  zlib-6             13.6 MB →   13.5 MB ratio=1.006x  bpw=1.591  comp=0.05 GB/s  decomp=0.45 GB/s  rt=✓  fast= 
+
+[12/12] base_model_layers_7_mlp_experts_5_gate_ternary.bin  (13.6 MB, entropy=7.9203 bits/byte)
+  raw_bpw=1.600  (theoretical TQ1_0 ceiling: 1.585 bpw)
+  zstd-1             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=6.68 GB/s  decomp=29.59 GB/s  rt=✓  fast=✓
+  zstd-3             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=6.36 GB/s  decomp=34.29 GB/s  rt=✓  fast=✓
+  zstd-6             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=4.48 GB/s  decomp=32.59 GB/s  rt=✓  fast=✓
+  zstd-9             13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=3.41 GB/s  decomp=41.28 GB/s  rt=✓  fast=✓
+  lz4-default        13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=3.54 GB/s  decomp=17.31 GB/s  rt=✓  fast=✓
+  lz4-fast4          13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=0.06 GB/s  decomp=16.29 GB/s  rt=✓  fast=✓
+  lz4-hc9            13.6 MB →   13.6 MB ratio=1.000x  bpw=1.600  comp=0.06 GB/s  decomp=17.60 GB/s  rt=✓  fast=✓
+  zlib-6             13.6 MB →   13.5 MB ratio=1.006x  bpw=1.590  comp=0.05 GB/s  decomp=0.45 GB/s  rt=✓  fast= 
+
+==========================================================================================
+AVERAGES ACROSS ALL SAMPLED EXPERTS
+==========================================================================================
+  codec               ratio     bpw   comp GB/s   decomp GB/s   fast?
+  ---------------- --------  ------  ----------  ------------  ------
+  lz4-default         1.032x  1.563        3.34         15.99  ✓ FAST
+  lz4-fast4           1.039x  1.557        0.06         16.33  ✓ FAST
+  lz4-hc9             1.041x  1.556        0.05         16.99  ✓ FAST
+  zlib-6              1.049x  1.545        0.05          0.46    slow
+  zstd-1              1.049x  1.550        5.31         27.60  ✓ FAST
+  zstd-3              1.052x  1.548        5.37         30.76  ✓ FAST
+  zstd-6              1.055x  1.546        3.73         31.67  ✓ FAST
+  zstd-9              1.056x  1.545        3.27         31.87  ✓ FAST
+
+Shannon entropy (byte-level): avg=7.7506 bits/byte  (max=8)
+  → bits per ternary weight (entropy floor): 1.5501
+  → TQ1_0 theoretical ceiling: 1.5850 bpw
+  → TQ1_0 raw (uncompressed): 1.6 bpw  (5 vals × 8 bits / 25 slots per 5 bytes)
+
+==========================================================================================
+RECOMMENDATION
+==========================================================================================
+  Best codec meeting >3.0 GB/s decomp threshold: zstd-9
+    ratio=1.056x  bpw=1.545  decomp=31.87 GB/s
+
+STORAGE IMPACT (Outlier-10B, all ternary experts)
+  Ternary expert files: 672  ×  13.6 MB  =  9.1 GB
+  lz4-default       9.1 GB → 8.8 GB  (save 0.3 GB, 3.1%)
+  lz4-fast4         9.1 GB → 8.8 GB  (save 0.3 GB, 3.8%)
+  lz4-hc9           9.1 GB → 8.8 GB  (save 0.4 GB, 4.0%)
+  zlib-6            9.1 GB → 8.7 GB  (save 0.4 GB, 4.6%)
+  zstd-1            9.1 GB → 8.7 GB  (save 0.4 GB, 4.6%)
+  zstd-3            9.1 GB → 8.7 GB  (save 0.4 GB, 4.9%)
+  zstd-6            9.1 GB → 8.7 GB  (save 0.5 GB, 5.2%)
+  zstd-9            9.1 GB → 8.6 GB  (save 0.5 GB, 5.3%)
+
+  NVMe threshold: >3.0 GB/s decompression needed to not bottleneck 5 GB/s SSD
