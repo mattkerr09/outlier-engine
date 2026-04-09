@@ -748,6 +748,7 @@ def load_hybrid_paged_qwen(
     model_dir = Path(model_path)
     with open(model_dir / "config.json") as f:
         cfg = _normalize_config(json.load(f))
+    alpha_sidecar_present = any(model_dir.rglob("alpha.json"))
     layer_alphas = _load_hybrid_expert_alphas(
         model_dir,
         n_layers=cfg["n_layers"],
@@ -788,6 +789,7 @@ def load_hybrid_paged_qwen(
                 layer_idx=layer_idx,
                 page_manager=None,
                 alphas=layer_alphas.get(layer_idx),
+                alpha_default=0.0 if alpha_sidecar_present else 1.0,
             )
 
     model = model.to_empty(device=torch.device(device))
@@ -1061,6 +1063,7 @@ class _HybridPagedMLP(nn.Module):
         layer_idx: int,
         page_manager: "ExpertPageManager | None" = None,
         alphas: Optional[Dict[int, float]] = None,
+        alpha_default: float = 1.0,
     ) -> None:
         super().__init__()
         self.n_experts = n_experts
@@ -1068,6 +1071,7 @@ class _HybridPagedMLP(nn.Module):
         self.layer_idx = layer_idx
         self.page_manager = page_manager
         self.alphas = {int(expert_idx): float(alpha) for expert_idx, alpha in (alphas or {}).items()}
+        self.alpha_default = float(alpha_default)
         self.router_weight = nn.Parameter(
             torch.empty(n_experts, hidden_dim), requires_grad=False
         )
@@ -1120,7 +1124,7 @@ class _HybridPagedMLP(nn.Module):
                 for eid in used_expert_ids
             ]).to(dtype=batched_out.dtype, device=batched_out.device)  # [E]
             alpha_vec = torch.tensor(
-                [self.alphas.get(int(eid), 1.0) for eid in used_expert_ids],
+                [self.alphas.get(int(eid), self.alpha_default) for eid in used_expert_ids],
                 dtype=batched_out.dtype,
                 device=batched_out.device,
             )
@@ -1136,7 +1140,7 @@ class _HybridPagedMLP(nn.Module):
             weights = (selected_w * assignment.to(selected_w.dtype)).sum(dim=-1, keepdim=True)
             expert = self.page_manager.get_expert(self.layer_idx, int(expert_idx))
             out = _run_expert(x_flat[token_mask], expert).to(shared_out.dtype)
-            out = out * self.alphas.get(int(expert_idx), 1.0)
+            out = out * self.alphas.get(int(expert_idx), self.alpha_default)
             expert_out[token_mask] += weights[token_mask] * out
 
         return (shared_out + expert_out).to(x.dtype).view(batch, seq_len, hidden_dim)
