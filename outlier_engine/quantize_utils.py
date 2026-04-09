@@ -37,8 +37,8 @@ def quantize_to_int8(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     Input:  any floating-point tensor
     Output: (weight_int8, scale)
               weight_int8 — same shape as input, dtype=int8
-              scale       — [out_features, 1] float16 for matrices,
-                            scalar float16 for 1D tensors
+              scale       — [out_features, 1] bfloat16 for matrices,
+                            scalar bfloat16 for 1D tensors
     """
     weight_f = weight.float()
     if weight_f.ndim <= 1:
@@ -53,7 +53,7 @@ def quantize_to_int8(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         .clamp(-127, 127)
         .to(torch.int8)
     )
-    return weight_int8, scale.half()
+    return weight_int8, scale.to(torch.bfloat16)
 
 
 def dequant_int8_matmul(

@@ -67,6 +67,7 @@ import torch.nn.functional as F
 from .prefetch import ExpertPrefetcher
 from .routing_predictor import RoutingPredictor
 from .et_routing import ETRouter
+from .cache_prior_routing import CachePriorRouter
 from .model import (
     _RMSNorm,
     _Attention,
@@ -90,6 +91,38 @@ def _profile_enabled() -> bool:
 def _batched_enabled() -> bool:
     """OUTLIER_BATCHED=1 (default ON) — use batched GEMM in MoE forward."""
     return os.environ.get("OUTLIER_BATCHED", "1").strip() != "0"
+
+
+def _cache_prior_enabled() -> bool:
+    """OUTLIER_CACHE_PRIOR=1 (default ON) — bias routing toward cached experts."""
+    return os.environ.get("OUTLIER_CACHE_PRIOR", "1").strip() != "0"
+
+
+def _cache_prior_lambda() -> float:
+    raw = os.environ.get("OUTLIER_CACHE_PRIOR_LAMBDA", "0.5").strip()
+    try:
+        return float(raw)
+    except ValueError:
+        warnings.warn(f"Invalid OUTLIER_CACHE_PRIOR_LAMBDA={raw!r}; falling back to 0.5", stacklevel=2)
+        return 0.5
+
+
+def _cache_prior_top_j() -> int:
+    raw = os.environ.get("OUTLIER_CACHE_PRIOR_TOP_J", "1").strip()
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        warnings.warn(f"Invalid OUTLIER_CACHE_PRIOR_TOP_J={raw!r}; falling back to 1", stacklevel=2)
+        return 1
+
+
+def _cache_prior_alpha() -> float:
+    raw = os.environ.get("OUTLIER_CACHE_PRIOR_ALPHA", "0.99").strip()
+    try:
+        return float(raw)
+    except ValueError:
+        warnings.warn(f"Invalid OUTLIER_CACHE_PRIOR_ALPHA={raw!r}; falling back to 0.99", stacklevel=2)
+        return 0.99
 
 
 def _sync_device(device: torch.device | str) -> None:
@@ -205,11 +238,11 @@ class _Int8SwiGLU(nn.Module):
         super().__init__()
         I, D = intermediate_dim, hidden_dim
         self.register_buffer("gate_w", torch.zeros(I, D, dtype=torch.int8))
-        self.register_buffer("gate_s", torch.ones(I, 1, dtype=torch.float16))
+        self.register_buffer("gate_s", torch.ones(I, 1, dtype=torch.bfloat16))
         self.register_buffer("up_w",   torch.zeros(I, D, dtype=torch.int8))
-        self.register_buffer("up_s",   torch.ones(I, 1, dtype=torch.float16))
+        self.register_buffer("up_s",   torch.ones(I, 1, dtype=torch.bfloat16))
         self.register_buffer("down_w", torch.zeros(D, I, dtype=torch.int8))
-        self.register_buffer("down_s", torch.ones(D, 1, dtype=torch.float16))
+        self.register_buffer("down_s", torch.ones(D, 1, dtype=torch.bfloat16))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         from .quantize_utils import dequant_int8_matmul
@@ -786,6 +819,60 @@ def _summarize_et_stats(routers: list[ETRouter] | None) -> Dict[str, object]:
     }
 
 
+def _summarize_cache_prior_stats(routers: list[CachePriorRouter] | None) -> Dict[str, object]:
+    if not routers:
+        return {
+            "cache_prior_enabled": False,
+            "cache_prior_overrides": 0,
+            "cache_prior_tokens": 0,
+            "cache_prior_override_rate": 0.0,
+        }
+
+    overrides = 0
+    tokens = 0
+    lam = None
+    top_j = None
+    for router in routers:
+        stats = router.stats
+        overrides += int(stats["cache_prior_overrides"])
+        tokens += int(stats["cache_prior_tokens"])
+        lam = stats["cache_prior_lambda"]
+        top_j = stats["cache_prior_top_j"]
+    return {
+        "cache_prior_enabled": True,
+        "cache_prior_overrides": overrides,
+        "cache_prior_tokens": tokens,
+        "cache_prior_override_rate": (overrides / tokens) if tokens else 0.0,
+        "cache_prior_lambda": lam,
+        "cache_prior_top_j": top_j,
+    }
+
+
+def _route_with_cache_prior(
+    router: CachePriorRouter,
+    logits: torch.Tensor,
+    *,
+    layer_id: int,
+    initial_cache_state: set[int],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if logits.ndim == 1:
+        return router.route(logits, layer_id=layer_id, cache_state=initial_cache_state)
+
+    cache_state = set(initial_cache_state)
+    selected_idx_rows = []
+    selected_w_rows = []
+    for row in range(logits.shape[0]):
+        row_idx, row_w = router.route(
+            logits[row : row + 1],
+            layer_id=layer_id,
+            cache_state=cache_state,
+        )
+        selected_idx_rows.append(row_idx)
+        selected_w_rows.append(row_w)
+        cache_state.update(int(expert_idx) for expert_idx in row_idx[0].tolist() if expert_idx >= 0)
+    return torch.cat(selected_idx_rows, dim=0), torch.cat(selected_w_rows, dim=0)
+
+
 # ---------------------------------------------------------------------------
 # Device-resident layer containers
 # ---------------------------------------------------------------------------
@@ -841,10 +928,19 @@ class _HybridPagedMLP(nn.Module):
         if et_router is not None:
             selected_idx, selected_w = et_router.route(logits)
         else:
-            probs = F.softmax(logits, dim=-1)
-            effective_top_k = min(self.top_k, probs.shape[-1])
-            selected_w, selected_idx = torch.topk(probs, k=effective_top_k, dim=-1)
-            selected_w = selected_w / selected_w.sum(-1, keepdim=True)
+            cache_prior_router = self.page_manager.get_cache_prior_router(self.layer_idx)
+            if cache_prior_router is not None:
+                selected_idx, selected_w = _route_with_cache_prior(
+                    cache_prior_router,
+                    logits,
+                    layer_id=self.layer_idx,
+                    initial_cache_state=self.page_manager.cached_expert_ids(self.layer_idx),
+                )
+            else:
+                probs = F.softmax(logits, dim=-1)
+                effective_top_k = min(self.top_k, probs.shape[-1])
+                selected_w, selected_idx = torch.topk(probs, k=effective_top_k, dim=-1)
+                selected_w = selected_w / selected_w.sum(-1, keepdim=True)
         used_expert_ids = [int(expert_id) for expert_id in torch.unique(selected_idx[selected_idx >= 0]).tolist()]
         self.page_manager.record_layer_routing(self.layer_idx, logits.detach(), used_expert_ids)
 
@@ -923,6 +1019,18 @@ class ExpertPageManager:
         self._last_routed_layer: int | None = None
         self._last_routed_experts: list[int] = []
         self._et_routers: list[ETRouter] | None = None
+        self._cache_prior_routers: list[CachePriorRouter] | None = None
+        if _cache_prior_enabled() and self.n_experts > 0 and self.n_layers > 0:
+            self._cache_prior_routers = [
+                CachePriorRouter(
+                    self.n_experts,
+                    top_k=self.top_k,
+                    top_j=min(_cache_prior_top_j(), self.top_k, self.n_experts),
+                    lam=_cache_prior_lambda(),
+                    alpha=_cache_prior_alpha(),
+                )
+                for _ in range(self.n_layers)
+            ]
 
         self._build_shard_index()
         self._load_packed_index()
@@ -1008,6 +1116,24 @@ class ExpertPageManager:
 
     def et_routing_stats(self) -> Dict[str, object]:
         return _summarize_et_stats(getattr(self, "_et_routers", None))
+
+    def cache_prior_stats(self) -> Dict[str, object]:
+        return _summarize_cache_prior_stats(getattr(self, "_cache_prior_routers", None))
+
+    def get_cache_prior_router(self, layer_idx: int) -> CachePriorRouter | None:
+        routers = getattr(self, "_cache_prior_routers", None)
+        if routers is None or layer_idx >= len(routers):
+            return None
+        return routers[layer_idx]
+
+    def cached_expert_ids(self, layer_idx: int) -> set[int]:
+        with self._get_lock():
+            cached = {
+                expert_idx
+                for cache_layer_idx, expert_idx in list(self._hot_cache.keys()) + list(self._cpu_cache.keys())
+                if cache_layer_idx == layer_idx
+            }
+        return cached
 
     def wait_for_layer(self, layer_idx: int) -> None:
         prefetcher = getattr(self, "_prefetcher", None)
@@ -1236,6 +1362,7 @@ class ExpertPageManager:
         }
         stats.update(self.prefetch_stats())
         stats.update(self.et_routing_stats())
+        stats.update(self.cache_prior_stats())
         return stats
 
 
@@ -1454,6 +1581,18 @@ class OutlierPagedModel(nn.Module):
         self._last_routed_layer: int | None = None
         self._last_routed_experts: list[int] = []
         self._et_routers: list[ETRouter] | None = None
+        self._cache_prior_routers: list[CachePriorRouter] | None = None
+        if _cache_prior_enabled() and self.n_experts > 0 and self.n_layers > 0:
+            self._cache_prior_routers = [
+                CachePriorRouter(
+                    self.n_experts,
+                    top_k=self.top_k,
+                    top_j=min(_cache_prior_top_j(), self.top_k, self.n_experts),
+                    lam=_cache_prior_lambda(),
+                    alpha=_cache_prior_alpha(),
+                )
+                for _ in range(self.n_layers)
+            ]
 
     # ------------------------------------------------------------------
     # Async prefetch integration
@@ -1481,9 +1620,20 @@ class OutlierPagedModel(nn.Module):
     def routing_stats(self) -> Dict[str, object]:
         return _summarize_et_stats(getattr(self, "_et_routers", None))
 
+    def cache_prior_stats(self) -> Dict[str, object]:
+        return _summarize_cache_prior_stats(getattr(self, "_cache_prior_routers", None))
+
     def enable_async_prefetch(self, max_prefetch_ahead: int = 2) -> None:
         del max_prefetch_ahead
         self.enable_expert_prefetch()
+
+    def _cached_expert_ids(self, layer_idx: int) -> set[int]:
+        with self._get_lock():
+            return {
+                expert_idx
+                for cache_layer_idx, expert_idx in list(self._lru_cache.keys()) + list(self._cpu_cache.keys())
+                if cache_layer_idx == layer_idx
+            }
 
     def _get_lock(self) -> threading.RLock:
         lock = getattr(self, "_lock", None)
@@ -1910,10 +2060,19 @@ class OutlierPagedModel(nn.Module):
                 if et_router is not None:
                     selected_idx, selected_w = et_router.route(logits)
                 else:
-                    probs  = F.softmax(logits, dim=-1)
-                    effective_top_k = min(self.top_k, probs.shape[-1])
-                    selected_w, selected_idx = torch.topk(probs, k=effective_top_k, dim=-1)
-                    selected_w = selected_w / selected_w.sum(-1, keepdim=True)
+                    cache_prior_router = None if self._cache_prior_routers is None else self._cache_prior_routers[i]
+                    if cache_prior_router is not None:
+                        selected_idx, selected_w = _route_with_cache_prior(
+                            cache_prior_router,
+                            logits,
+                            layer_id=i,
+                            initial_cache_state=self._cached_expert_ids(i),
+                        )
+                    else:
+                        probs  = F.softmax(logits, dim=-1)
+                        effective_top_k = min(self.top_k, probs.shape[-1])
+                        selected_w, selected_idx = torch.topk(probs, k=effective_top_k, dim=-1)
+                        selected_w = selected_w / selected_w.sum(-1, keepdim=True)
                 used_expert_ids = [int(expert_id) for expert_id in torch.unique(selected_idx[selected_idx >= 0]).tolist()]
                 self._record_layer_routing(i, logits.detach(), used_expert_ids)
 
@@ -2028,4 +2187,5 @@ class OutlierPagedModel(nn.Module):
         if self._expert_prefetcher is not None:
             stats.update(self._expert_prefetcher.prefetch_stats)
         stats.update(self.routing_stats())
+        stats.update(self.cache_prior_stats())
         return stats
