@@ -593,29 +593,26 @@ def _compute_perplexity(loaded, prompt_ids: List[int], response_ids: List[int]) 
 def _generate_ids(loaded, prompt_ids: List[int], max_tokens: int = 30) -> List[int]:
     """Greedy-generate max_tokens token IDs after prompt.
 
-    Uses KV cache so each step processes only 1 new token (O(n) total).
+    Uses model.generate() with KV cache enabled, which correctly handles
+    position IDs, attention masks, and EOS stopping.
     """
     model = loaded.model
     device = torch.device(loaded.device)
     inp = torch.tensor([prompt_ids], dtype=torch.long, device=device)
     eos = getattr(loaded.tokenizer, "eos_token_id", None)
-    generated = []
-    past_key_values = None
+    pad = getattr(loaded.tokenizer, "pad_token_id", eos)
+
     with torch.no_grad():
-        for _ in range(max_tokens):
-            out = model(
-                input_ids=inp,
-                use_cache=True,
-                past_key_values=past_key_values,
-            )
-            next_id = int(out.logits[0, -1].argmax().item())
-            generated.append(next_id)
-            past_key_values = out.past_key_values
-            if eos is not None and next_id == eos:
-                break
-            # After the first (prompt) pass, feed only the single new token
-            inp = torch.tensor([[next_id]], dtype=torch.long, device=device)
-    return generated
+        out_ids = model.generate(
+            inp,
+            max_new_tokens=max_tokens,
+            do_sample=False,           # greedy — deterministic
+            eos_token_id=eos,
+            pad_token_id=pad if pad is not None else eos,
+            use_cache=True,
+        )
+    # out_ids is [1, prompt_len + new_tokens]; return only the new tokens
+    return out_ids[0, len(prompt_ids):].tolist()
 
 
 def run_experiment_3(
