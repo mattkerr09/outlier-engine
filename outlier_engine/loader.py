@@ -199,6 +199,7 @@ def load_model(
     max_warm_cache: int = 256,
     packed_experts_dir: Optional[str] = None,
     monolith_path: Optional[str] = None,
+    roe_top_k: Optional[int] = None,
 ) -> LoadedOutlier:
     use_alias = not _is_local_path(model_ref)
     resolved_ref = _canonical_model_ref(model_ref) if use_alias else model_ref
@@ -302,6 +303,14 @@ def load_model(
         et_enabled = os.environ.get("OUTLIER_ET_ROUTING", "").strip() == "1"
     if et_enabled and paged and hasattr(model, "enable_et_routing"):
         model.enable_et_routing()
+
+    effective_roe_top_k = roe_top_k
+    if effective_roe_top_k is None:
+        env_roe = os.environ.get("OUTLIER_ROE_TOP_K", "").strip()
+        if env_roe.isdigit():
+            effective_roe_top_k = int(env_roe)
+    if effective_roe_top_k is not None and effective_roe_top_k > 2 and paged and hasattr(model, "enable_roe"):
+        model.enable_roe(effective_roe_top_k)
 
     return LoadedOutlier(
         model_ref=resolved_ref,

@@ -291,7 +291,7 @@ def test_alpha_batched():
 # test_fallback
 # ===========================================================================
 
-def test_fallback():
+def test_fallback(monkeypatch):
     """
     When no monolith file (experts.bin) exists, ExpertPageManager._load_expert_from_disk
     silently falls through to the packed individual-file path.
@@ -309,6 +309,10 @@ def test_fallback():
 
         # No experts.bin exists here
         assert not (packed_dir / "experts.bin").exists()
+
+        # Redirect the home-dir fallback candidate so a real ~/outlier-engine/packed_experts/experts.bin
+        # doesn't inadvertently satisfy the check in CI / developer environments.
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: packed_dir))
 
         # _resolve_monolith_path must return None
         resolved = _resolve_monolith_path(packed_dir, packed_dir, None)

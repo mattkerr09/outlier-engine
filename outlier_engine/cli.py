@@ -136,6 +136,9 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--max-warm-cache", type=int, default=256, dest="max_warm_cache")
     run_parser.add_argument("--monolith", default=None, metavar="PATH",
                             help="Path to experts.bin monolith (auto-detected if omitted).")
+    run_parser.add_argument("--top-k", type=int, default=2, dest="roe_top_k",
+                            help="RoE ensemble size (default: 2 = standard routing). "
+                                 "Values > 2 add cached experts with no extra SSD reads.")
     run_parser.add_argument("--verbose", action="store_true", help="Print token IDs and repr() chunks while generating.")
 
     info_parser = subparsers.add_parser("info", help="Print model architecture and artifact info.")
@@ -153,6 +156,8 @@ def build_parser() -> argparse.ArgumentParser:
     bench_parser.add_argument("--et-routing", action="store_true", dest="et_routing")
     bench_parser.add_argument("--monolith", default=None, metavar="PATH",
                               help="Path to experts.bin monolith (auto-detected if omitted).")
+    bench_parser.add_argument("--top-k", type=int, default=2, dest="roe_top_k",
+                              help="RoE ensemble size (default: 2 = standard routing).")
 
     demo_parser = subparsers.add_parser("demo", help="Run a three-prompt terminal demo.")
     demo_parser.add_argument("model", nargs="?", default=DEFAULT_MODEL)
@@ -169,6 +174,8 @@ def build_parser() -> argparse.ArgumentParser:
     demo_parser.add_argument("--max-warm-cache", type=int, default=256, dest="max_warm_cache")
     demo_parser.add_argument("--monolith", default=None, metavar="PATH",
                              help="Path to experts.bin monolith (auto-detected if omitted).")
+    demo_parser.add_argument("--top-k", type=int, default=2, dest="roe_top_k",
+                             help="RoE ensemble size (default: 2 = standard routing).")
 
     repack_parser = subparsers.add_parser("repack", help="Repack legacy MoE experts into local TQ1_0 cache.")
     repack_parser.add_argument("model")
@@ -263,6 +270,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             max_experts_in_memory=args.max_experts,
             max_warm_cache=args.max_warm_cache,
             monolith_path=getattr(args, "monolith", None),
+            roe_top_k=getattr(args, "roe_top_k", 2),
         )
         result = _run_generation(
             loaded,
@@ -290,6 +298,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             paged=_resolve_paged_flag(args),
             prefetch=True if args.prefetch else None,
             et_routing=True if args.et_routing else None,
+            roe_top_k=getattr(args, "roe_top_k", 2),
         )
         load_time = time.perf_counter() - load_t0
         results = [
@@ -329,6 +338,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             et_routing=True if args.et_routing else None,
             max_experts_in_memory=args.max_experts,
             max_warm_cache=args.max_warm_cache,
+            roe_top_k=getattr(args, "roe_top_k", 2),
         )
         results = []
         for idx, prompt in enumerate(DEMO_PROMPTS, start=1):

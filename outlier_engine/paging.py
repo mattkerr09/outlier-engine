@@ -1029,6 +1029,11 @@ def load_hybrid_paged_qwen(
 
     model.enable_et_routing = MethodType(_enable_et_routing, model)
     model.routing_stats = MethodType(lambda self: self.outlier_page_manager.et_routing_stats(), model)
+
+    def _enable_roe(self, roe_top_k: int) -> None:
+        self.outlier_page_manager.enable_roe(roe_top_k)
+
+    model.enable_roe = MethodType(_enable_roe, model)
     return model
 
 
@@ -1166,6 +1171,72 @@ def _route_with_cache_prior(
 
 
 # ---------------------------------------------------------------------------
+# RoE (Routing on Ensemble) helpers
+# ---------------------------------------------------------------------------
+
+def _roe_augment(
+    probs: torch.Tensor,
+    selected_idx: torch.Tensor,
+    *,
+    roe_top_k: int,
+    cached_ids: "set[int]",
+    single_token: bool,
+) -> "tuple[list[int], torch.Tensor | None]":
+    """
+    Augment standard top-k expert selection with additional experts from cache.
+
+    OUTLIER-ENGINE-ROE-001: sample up to ``roe_top_k`` experts, drawing extras
+    ONLY from the hot+warm cache so no SSD reads are triggered.  Weights are
+    re-normalised over the selected set (standard soft-MoE weighting).
+
+    Args:
+        probs:        softmax probabilities, shape [1, n_experts] (single-token only).
+        selected_idx: top-k expert indices, shape [1, k].
+        roe_top_k:    desired ensemble size (must be > k to have any effect).
+        cached_ids:   set of expert IDs in the hot or warm cache for this layer.
+        single_token: True when batch × seq_len == 1 (decode step).
+
+    Returns:
+        (extra_ids, roe_weights) where:
+            extra_ids  – list of extra expert IDs (may be empty)
+            roe_weights – 1-D tensor of renormalised weights over ALL selected
+                          experts (required + extras), or None if no extras.
+    """
+    if not single_token or roe_top_k <= 0:
+        return [], None
+
+    required_ids: list[int] = selected_idx[0].tolist()
+    n_required = len(required_ids)
+    if roe_top_k <= n_required:
+        return [], None
+
+    # Full sorted expert list by probability (descending)
+    all_probs_1d = probs[0]  # [n_experts]
+    n_to_consider = min(roe_top_k, int(all_probs_1d.shape[0]))
+    _, cand_idx = torch.topk(all_probs_1d, k=n_to_consider)
+
+    required_set = set(required_ids)
+    extras: list[int] = []
+    for eid_t in cand_idx.tolist():
+        eid = int(eid_t)
+        if eid in required_set:
+            continue
+        if eid in cached_ids:
+            extras.append(eid)
+        if n_required + len(extras) >= roe_top_k:
+            break
+
+    if not extras:
+        return [], None
+
+    all_ids = required_ids + extras
+    idx_t = torch.tensor(all_ids, dtype=torch.long, device=all_probs_1d.device)
+    raw_w = all_probs_1d[idx_t]
+    roe_w = raw_w / raw_w.sum()  # renormalise over selected set
+    return extras, roe_w
+
+
+# ---------------------------------------------------------------------------
 # Device-resident layer containers
 # ---------------------------------------------------------------------------
 
@@ -1221,6 +1292,7 @@ class _HybridPagedMLP(nn.Module):
             return shared_out.to(x.dtype).view(batch, seq_len, hidden_dim)
         logits = F.linear(x_flat.to(compute_dtype), self.router_weight.to(compute_dtype))
         et_router = self.page_manager.get_et_router(self.layer_idx)
+        _probs_for_roe: torch.Tensor | None = None
         if et_router is not None:
             selected_idx, selected_w = et_router.route(logits)
         else:
@@ -1237,8 +1309,23 @@ class _HybridPagedMLP(nn.Module):
                 effective_top_k = min(self.top_k, probs.shape[-1])
                 selected_w, selected_idx = torch.topk(probs, k=effective_top_k, dim=-1)
                 selected_w = selected_w / selected_w.sum(-1, keepdim=True)
+                _probs_for_roe = probs  # captured for RoE augmentation below
         used_expert_ids = [int(expert_id) for expert_id in torch.unique(selected_idx[selected_idx >= 0]).tolist()]
         self.page_manager.record_layer_routing(self.layer_idx, logits.detach(), used_expert_ids)
+
+        # OUTLIER-ENGINE-ROE-001: augment decode with cached extras (no SSD reads)
+        _roe_w: torch.Tensor | None = None
+        roe_top_k = getattr(self.page_manager, "roe_top_k", 0)
+        if _probs_for_roe is not None and roe_top_k > 0 and x_flat.shape[0] == 1:
+            _roe_extras, _roe_w = _roe_augment(
+                probs=_probs_for_roe,
+                selected_idx=selected_idx,
+                roe_top_k=roe_top_k,
+                cached_ids=self.page_manager.cached_expert_ids(self.layer_idx),
+                single_token=True,
+            )
+            if _roe_extras:
+                used_expert_ids = used_expert_ids + _roe_extras
 
         expert_out = torch.zeros_like(shared_out)
 
@@ -1249,12 +1336,15 @@ class _HybridPagedMLP(nn.Module):
             # batched_out: [E, H] — all experts computed in 4 kernel launches
             batched_out = _run_single_token_experts_batched(x_flat, experts).to(shared_out.dtype)
 
-            # Vectorized weighted combine — no Python loop over experts
-            # Build weight vector [E] then dot with expert outputs [E, H]
-            w_vec = torch.stack([
-                (selected_w[0] * (selected_idx[0] == eid).to(selected_w.dtype)).sum()
-                for eid in used_expert_ids
-            ]).to(dtype=batched_out.dtype, device=batched_out.device)  # [E]
+            # Use RoE weights (renormalised over required+extras) when available
+            if _roe_w is not None:
+                w_vec = _roe_w.to(dtype=batched_out.dtype, device=batched_out.device)  # [E]
+            else:
+                # Vectorized weighted combine — no Python loop over experts
+                w_vec = torch.stack([
+                    (selected_w[0] * (selected_idx[0] == eid).to(selected_w.dtype)).sum()
+                    for eid in used_expert_ids
+                ]).to(dtype=batched_out.dtype, device=batched_out.device)  # [E]
             alpha_vec = torch.tensor(
                 [self.alphas.get(int(eid), self.alpha_default) for eid in used_expert_ids],
                 dtype=batched_out.dtype,
@@ -1340,6 +1430,7 @@ class ExpertPageManager:
         self.n_experts = n_experts
         self.n_layers = n_layers
         self.top_k = top_k
+        self.roe_top_k: int = 0
         self.max_experts_in_memory = max_experts_in_memory
         self.max_warm_cache = max_warm_cache
         self._debug = bool(os.environ.get("OUTLIER_CACHE_DEBUG"))
@@ -1488,6 +1579,15 @@ class ExpertPageManager:
                 )
                 for _ in range(self.n_layers)
             ]
+
+    def enable_roe(self, roe_top_k: int) -> None:
+        """Enable RoE (Routing on Ensemble) for single-token decode steps.
+
+        When active, up to ``roe_top_k`` experts are used per forward pass.
+        Experts beyond the standard top-k are drawn ONLY from the hot+warm
+        cache — no SSD reads are triggered for the extra slots.
+        """
+        self.roe_top_k = max(0, int(roe_top_k))
 
     def get_et_router(self, layer_idx: int) -> ETRouter | None:
         routers = getattr(self, "_et_routers", None)
