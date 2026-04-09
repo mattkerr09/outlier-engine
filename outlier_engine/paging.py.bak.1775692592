@@ -347,7 +347,7 @@ class _ExpertWeights:
     def hot_ready(self, device: torch.device) -> "_ExpertWeights":
         """Return dequantized weights ready for matmul on the target device."""
         weights = self.unpack_to_int8() if self.packed else self
-        compute_dtype = torch.float32 if device.type == "cpu" else torch.bfloat16
+        compute_dtype = torch.float32 if device.type == "cpu" else torch.float16
         gate_s = weights.gate_s.to(device=device, dtype=compute_dtype)
         up_s = weights.up_s.to(device=device, dtype=compute_dtype)
         down_s = weights.down_s.to(device=device, dtype=compute_dtype)
@@ -391,7 +391,7 @@ class _ExpertWeights:
             return unpacked.run(x)
 
         if self.dequantized:
-            compute_dtype = torch.float32 if x.device.type == "cpu" else torch.bfloat16
+            compute_dtype = torch.float32 if x.device.type == "cpu" else torch.float16
             x_dev = x if (x.dtype == compute_dtype and x.device == self.gate_w.device) else x.to(
                 device=self.gate_w.device, dtype=compute_dtype
             )
@@ -426,7 +426,7 @@ class _ExpertWeights:
             return F.linear(gate * up, self.down_w)
 
         if x.device.type != "cpu":
-            compute_dtype = torch.bfloat16
+            compute_dtype = torch.float16
             x_dev = x.to(compute_dtype)
             gate_w = self.gate_w.to(compute_dtype) * self.gate_s.to(compute_dtype)
             up_w = self.up_w.to(compute_dtype) * self.up_s.to(compute_dtype)
@@ -595,7 +595,7 @@ def load_hybrid_paged_qwen(
             )
 
     model = model.to_empty(device=torch.device(device))
-    model = model.to(dtype=torch.bfloat16)
+    model = model.to(dtype=torch.float16)
 
     page_manager = ExpertPageManager(
         model_dir,
@@ -812,9 +812,6 @@ class _HybridPagedMLP(nn.Module):
         batch, seq_len, hidden_dim = x.shape
         x_flat = x.view(-1, hidden_dim)
         compute_dtype = x_flat.dtype if x_flat.device.type != "cpu" else torch.float32
-        shared_out = self.shared(x_flat.to(compute_dtype))
-        if os.environ.get("OUTLIER_SHARED_ONLY") == "1":
-            return shared_out.to(x.dtype).view(batch, seq_len, hidden_dim)
         logits = F.linear(x_flat.to(compute_dtype), self.router_weight.to(compute_dtype))
         et_router = self.page_manager.get_et_router(self.layer_idx)
         if et_router is not None:
@@ -827,6 +824,7 @@ class _HybridPagedMLP(nn.Module):
         used_expert_ids = [int(expert_id) for expert_id in torch.unique(selected_idx[selected_idx >= 0]).tolist()]
         self.page_manager.record_layer_routing(self.layer_idx, logits.detach(), used_expert_ids)
 
+        shared_out = self.shared(x_flat.to(compute_dtype))
         expert_out = torch.zeros_like(shared_out)
 
         if x_flat.shape[0] == 1 and len(used_expert_ids) > 1:
@@ -1387,7 +1385,7 @@ class OutlierPagedModel(nn.Module):
         self.lm_head = _NoInitLinear(D, V, bias=False)
         # Keep always-resident floating weights in FP16 instead of silently
         # inflating to FP32 during checkpoint-backed initialization.
-        self.to(dtype=torch.bfloat16)
+        self.to(dtype=torch.float16)
 
         # Two-tier expert cache (both bounded with LRU eviction)
         self._lru_cache: OrderedDict[Tuple[int, int], _ExpertWeights] = OrderedDict()

@@ -24,7 +24,7 @@ QUANT_CHUNK: int = 2048
 
 
 def _matmul_compute_dtype(x: torch.Tensor) -> torch.dtype:
-    return torch.float32 if x.device.type == "cpu" else torch.float16
+    return torch.float32 if x.device.type == "cpu" else torch.bfloat16
 
 
 def quantize_to_int8(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
