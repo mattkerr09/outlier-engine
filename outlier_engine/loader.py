@@ -198,6 +198,7 @@ def load_model(
     max_experts_in_memory: int = 64,
     max_warm_cache: int = 256,
     packed_experts_dir: Optional[str] = None,
+    monolith_path: Optional[str] = None,
 ) -> LoadedOutlier:
     use_alias = not _is_local_path(model_ref)
     resolved_ref = _canonical_model_ref(model_ref) if use_alias else model_ref
@@ -246,6 +247,7 @@ def load_model(
                         max_experts_in_memory=max_experts_in_memory,
                         max_warm_cache=max_warm_cache,
                         packed_experts_dir=packed_dir,
+                        monolith_path=monolith_path,
                     )
                 except Exception as hybrid_exc:
                     warnings.warn(f"Hybrid paged loader failed, falling back to legacy paged runtime: {hybrid_exc}")

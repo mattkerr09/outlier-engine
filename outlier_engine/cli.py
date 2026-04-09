@@ -12,7 +12,13 @@ import torch
 
 from .generate import benchmark_generation, stream_generate
 from .loader import inspect_model, load_model
-from .paging import _default_packed_dir, repack_ternary_experts
+from .paging import (
+    _default_packed_dir,
+    repack_ternary_experts,
+    MonolithExpertLoader,
+    _resolve_monolith_path,
+)
+from pathlib import Path
 
 DEFAULT_MODEL = "Outlier-Ai/Outlier-10B"
 ENGINE_VERSION = "0.3"
@@ -128,6 +134,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--et-routing", action="store_true", dest="et_routing")
     run_parser.add_argument("--max-experts", type=int, default=64, dest="max_experts")
     run_parser.add_argument("--max-warm-cache", type=int, default=256, dest="max_warm_cache")
+    run_parser.add_argument("--monolith", default=None, metavar="PATH",
+                            help="Path to experts.bin monolith (auto-detected if omitted).")
     run_parser.add_argument("--verbose", action="store_true", help="Print token IDs and repr() chunks while generating.")
 
     info_parser = subparsers.add_parser("info", help="Print model architecture and artifact info.")
@@ -143,6 +151,8 @@ def build_parser() -> argparse.ArgumentParser:
     bench_parser.add_argument("--full", action="store_true")
     bench_parser.add_argument("--prefetch", action="store_true")
     bench_parser.add_argument("--et-routing", action="store_true", dest="et_routing")
+    bench_parser.add_argument("--monolith", default=None, metavar="PATH",
+                              help="Path to experts.bin monolith (auto-detected if omitted).")
 
     demo_parser = subparsers.add_parser("demo", help="Run a three-prompt terminal demo.")
     demo_parser.add_argument("model", nargs="?", default=DEFAULT_MODEL)
@@ -157,11 +167,30 @@ def build_parser() -> argparse.ArgumentParser:
     demo_parser.add_argument("--et-routing", action="store_true", dest="et_routing")
     demo_parser.add_argument("--max-experts", type=int, default=64, dest="max_experts")
     demo_parser.add_argument("--max-warm-cache", type=int, default=256, dest="max_warm_cache")
+    demo_parser.add_argument("--monolith", default=None, metavar="PATH",
+                             help="Path to experts.bin monolith (auto-detected if omitted).")
 
     repack_parser = subparsers.add_parser("repack", help="Repack legacy MoE experts into local TQ1_0 cache.")
     repack_parser.add_argument("model")
     repack_parser.add_argument("--output-dir", default=str(_default_packed_dir()), dest="output_dir")
     repack_parser.add_argument("--hf-token", default=None, dest="hf_token")
+
+    monolith_parser = subparsers.add_parser(
+        "monolith",
+        help="Pack per-expert TQ1_0 .bin files into a single 4KB-aligned experts.bin monolith.",
+    )
+    monolith_parser.add_argument(
+        "--packed-dir",
+        default=str(_default_packed_dir()),
+        dest="packed_dir",
+        help="Directory containing index.json + per-expert .bin files (default: %(default)s).",
+    )
+    monolith_parser.add_argument(
+        "--output",
+        default=None,
+        dest="output",
+        help="Output path for experts.bin (default: <packed-dir>/experts.bin).",
+    )
 
     return parser
 
@@ -233,6 +262,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             et_routing=True if args.et_routing else None,
             max_experts_in_memory=args.max_experts,
             max_warm_cache=args.max_warm_cache,
+            monolith_path=getattr(args, "monolith", None),
         )
         result = _run_generation(
             loaded,
@@ -342,6 +372,32 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"Original expert data: {meta['original_mb']:.1f} MB")
         print(f"Packed expert data: {meta['packed_mb']:.1f} MB")
         print(f"Compression ratio: {meta['compression_ratio']:.2f}x")
+        return 0
+
+    if args.command == "monolith":
+        from .expert_store import ExpertStore
+        packed_dir = Path(args.packed_dir).expanduser()
+        if not (packed_dir / "index.json").exists():
+            print(
+                f"Error: no index.json found in {packed_dir}. "
+                "Run 'outlier-engine repack' first.",
+                file=sys.stderr,
+            )
+            return 1
+        output_path = Path(args.output).expanduser() if args.output else packed_dir / "experts.bin"
+        print(f"Packing experts from: {packed_dir}")
+        print(f"Output:               {output_path}")
+        t0 = time.perf_counter()
+        stats = ExpertStore.pack(packed_dir, output_path)
+        elapsed = time.perf_counter() - t0
+        size_mb = output_path.stat().st_size / 1024**2
+        print(f"Done in {elapsed:.1f}s")
+        print(f"Entries:    {stats['num_entries']} experts "
+              f"({stats['num_layers']} layers × {stats['experts_per_layer']} experts/layer)")
+        print(f"Blob size:  {stats['expert_blob_size'] / 1024:.1f} KB per expert "
+              f"(padded to {stats['expert_padded_size'] / 1024:.1f} KB)")
+        print(f"Total size: {size_mb:.1f} MB")
+        print(f"Written to: {output_path}")
         return 0
 
     parser.error(f"unknown command: {args.command}")

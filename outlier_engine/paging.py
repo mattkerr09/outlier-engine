@@ -141,6 +141,136 @@ def _profile_log(message: str) -> None:
         print(f"[OUTLIER_PROFILE] {message}", flush=True)
 
 
+def _resolve_monolith_path(
+    model_dir: Path,
+    packed_experts_dir: Optional[Path],
+    monolith_path: Optional[str | "Path"] = None,
+) -> Optional[Path]:
+    """Return the first existing monolith (experts.bin) candidate, or None."""
+    candidates: list[Path] = []
+    if monolith_path:
+        candidates.append(Path(monolith_path).expanduser())
+    env_path = os.environ.get("OUTLIER_MONOLITH_PATH", "").strip()
+    if env_path:
+        candidates.append(Path(env_path).expanduser())
+    if packed_experts_dir is not None:
+        candidates.append(packed_experts_dir / "experts.bin")
+    if model_dir is not None:
+        candidates.append(model_dir / "packed_experts" / "experts.bin")
+    candidates.append(Path.home() / "outlier-engine" / "packed_experts" / "experts.bin")
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+    return None
+
+
+class MonolithExpertLoader:
+    """
+    Persistent O_RDONLY random-access reader for the packed experts.bin monolith.
+
+    Keeps a single file descriptor open for the lifetime of the page manager so
+    every expert lookup is a single pread() syscall instead of open+seek+read+close.
+    Requires a populated ``packed_index`` (from index.json) for tensor shape metadata.
+    """
+
+    def __init__(
+        self,
+        store_path: str | Path,
+        packed_index: Dict[str, Dict[str, object]],
+    ) -> None:
+        from .expert_store import ExpertStore, SUB_FILE_ORDER
+
+        self.store_path = Path(store_path).expanduser().resolve()
+        self._packed_index = packed_index
+        self._fd = os.open(str(self.store_path), os.O_RDONLY)
+        with open(self.store_path, "rb") as handle:
+            header = ExpertStore._read_header(handle)
+            self._index = ExpertStore._read_index(handle, header["num_entries"])
+        self._sub_sizes: Dict[str, int] = {
+            name: int(size)
+            for name, size in zip(SUB_FILE_ORDER, header["sub_sizes"])
+        }
+        self._sub_file_order: list[str] = list(SUB_FILE_ORDER)
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def close(self) -> None:
+        fd = getattr(self, "_fd", None)
+        if fd is not None:
+            os.close(fd)
+            self._fd = None  # type: ignore[assignment]
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _meta(self, layer_idx: int, expert_idx: int, proj: str, suffix: str) -> Dict[str, object]:
+        key = f"base.model.layers.{layer_idx}.mlp.experts.{expert_idx}.{proj}_{suffix}"
+        info = self._packed_index.get(key)
+        if info is None:
+            raise KeyError(f"Packed metadata missing for {key!r}")
+        return info
+
+    # ------------------------------------------------------------------
+    # Main load
+    # ------------------------------------------------------------------
+
+    def load_expert(self, layer_idx: int, expert_idx: int) -> "_ExpertWeights":
+        """Load one expert from the monolith via a single pread() syscall."""
+        key = (layer_idx, expert_idx)
+        if key not in self._index:
+            raise KeyError(f"Expert ({layer_idx}, {expert_idx}) not present in monolith")
+
+        offset, size = self._index[key]
+        raw = os.pread(self._fd, size, offset)
+        if len(raw) != size:
+            raise IOError(
+                f"Short read for expert ({layer_idx}, {expert_idx}): "
+                f"expected {size} B, got {len(raw)} B"
+            )
+
+        view = memoryview(raw)
+        cursor = 0
+        chunks: dict[str, memoryview] = {}
+        for name in self._sub_file_order:
+            chunk_size = self._sub_sizes[name]
+            chunks[name] = view[cursor : cursor + chunk_size]
+            cursor += chunk_size
+
+        tensors: dict[str, tuple] = {}
+        shapes: dict[str, tuple] = {}
+        for proj in ("gate", "up", "down"):
+            t_info = self._meta(layer_idx, expert_idx, proj, "ternary")
+            s_info = self._meta(layer_idx, expert_idx, proj, "scale")
+            ternary = torch.from_numpy(
+                np.frombuffer(chunks[f"{proj}_ternary"], dtype=np.uint8).copy()
+            )
+            scale_shape = tuple(int(d) for d in s_info["shape"])
+            scale = torch.from_numpy(
+                np.frombuffer(chunks[f"{proj}_scale"], dtype=np.float16).copy()
+            ).reshape(scale_shape)
+            tensors[proj] = (ternary, scale)
+            shapes[proj] = tuple(int(d) for d in t_info["shape"])
+
+        return _ExpertWeights(
+            tensors["gate"][0], tensors["gate"][1],
+            tensors["up"][0],   tensors["up"][1],
+            tensors["down"][0], tensors["down"][1],
+            packed=True,
+            dequantized=False,
+            packed_format="tq10",
+            shapes=shapes,
+        )
+
+
 def _parse_layer_idx(value: str) -> int | None:
     for pattern in (
         r"^(?:layers?|layer)[._](\d+)$",
@@ -741,6 +871,7 @@ def load_hybrid_paged_qwen(
     max_experts_in_memory: int = 64,
     max_warm_cache: int = 256,
     packed_experts_dir: Optional[str] = None,
+    monolith_path: Optional[str | Path] = None,
 ):
     """Build a native Qwen2 model and swap only the MLP path for paged MoE."""
     from transformers import Qwen2Config, Qwen2ForCausalLM
@@ -804,6 +935,7 @@ def load_hybrid_paged_qwen(
         max_experts_in_memory=max_experts_in_memory,
         max_warm_cache=max_warm_cache,
         packed_experts_dir=packed_experts_dir,
+        monolith_path=monolith_path,
     )
 
     for layer in model.model.layers:
@@ -1201,6 +1333,7 @@ class ExpertPageManager:
         max_experts_in_memory: int = 64,
         max_warm_cache: int = 256,
         packed_experts_dir: Optional[str] = None,
+        monolith_path: Optional[str | Path] = None,
     ) -> None:
         self.model_dir = Path(model_dir)
         self.device = torch.device(device)
@@ -1226,6 +1359,8 @@ class ExpertPageManager:
         self._tensor_shard_index: Dict[str, str] = {}
         self._packed_index: Dict[str, Dict[str, object]] = {}
         self._packed_experts_dir = Path(packed_experts_dir).expanduser() if packed_experts_dir else None
+        self._monolith_loader: MonolithExpertLoader | None = None
+        self._monolith_path: Path | None = None
         self._fmt = "toy"
         self._prefetcher: ExpertPrefetcher | None = None
         self._routing_predictor: RoutingPredictor | None = None
@@ -1247,6 +1382,7 @@ class ExpertPageManager:
 
         self._build_shard_index()
         self._load_packed_index()
+        self._init_monolith_loader(monolith_path)
 
     def _get_lock(self) -> threading.RLock:
         lock = getattr(self, "_lock", None)
@@ -1296,6 +1432,34 @@ class ExpertPageManager:
         if not index_path.exists():
             return
         self._packed_index = json.loads(index_path.read_text(encoding="utf-8"))
+
+    def _init_monolith_loader(self, monolith_path: Optional[str | Path]) -> None:
+        """Auto-detect and open the monolith experts.bin if one is available.
+
+        Requires ``self._packed_index`` to already be populated (called after
+        ``_load_packed_index``).  Falls back gracefully if no monolith is found
+        or if the packed index is empty (shape metadata unavailable).
+        """
+        if not self._packed_index:
+            # Can't parse monolith tensors without shape metadata from index.json.
+            return
+        resolved = _resolve_monolith_path(
+            self.model_dir,
+            self._packed_experts_dir,
+            monolith_path,
+        )
+        if resolved is None:
+            return
+        try:
+            self._monolith_loader = MonolithExpertLoader(resolved, self._packed_index)
+            self._monolith_path = resolved
+            _profile_log(f"monolith loader active: {resolved}")
+        except Exception as exc:
+            warnings.warn(
+                f"Failed to initialise monolith loader from {resolved}: {exc}; "
+                "falling back to per-expert disk loads.",
+                stacklevel=3,
+            )
 
     def _add_to_warm_cache(self, key: Tuple[int, int], weights: _ExpertWeights) -> None:
         if key in self._cpu_cache:
@@ -1531,9 +1695,20 @@ class ExpertPageManager:
         )
 
     def _load_expert_from_disk(self, layer_idx: int, expert_idx: int) -> _ExpertWeights:
+        # 1. Monolith (fastest: single pread syscall, 4KB-aligned layout)
+        loader = getattr(self, "_monolith_loader", None)
+        if loader is not None:
+            try:
+                return loader.load_expert(layer_idx, expert_idx)
+            except (KeyError, IOError):
+                pass  # expert not in monolith — fall through
+
+        # 2. Per-expert packed binary files (packed_experts_dir)
         packed = self._load_expert_from_packed(layer_idx, expert_idx)
         if packed is not None:
             return packed
+
+        # 3. Original safetensors shards (cold path)
         from safetensors import safe_open
 
         if self._fmt == "real":
