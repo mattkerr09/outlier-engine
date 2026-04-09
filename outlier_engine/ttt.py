@@ -16,6 +16,7 @@ below 15 GB the experiment saves partial results and aborts.
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import time
@@ -270,7 +271,14 @@ def ttt_on_tokens(
                     p.data.sub_(lr * p.grad)
                     p.data.clamp_(0.0, 1.0)
 
-        total_loss += float(loss.item())
+        loss_val = float(loss.item())
+        # Explicitly free computation graph and output tensors before next chunk.
+        del out, logits, loss, inp, tgt
+        gc.collect()
+        if torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+
+        total_loss += loss_val
         n_chunks += 1
 
     return total_loss / max(n_chunks, 1)
