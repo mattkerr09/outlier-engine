@@ -56,6 +56,8 @@ def _format_cache(stats: dict[str, Any] | None) -> str:
         summary += f" prefetch_accuracy={stats.get('prefetch_accuracy', 0.0):.1%}"
     if stats.get("et_routing_enabled"):
         summary += f" avg_experts_per_token={stats.get('avg_experts_per_token', 0.0):.2f}"
+    if stats.get("cache_prior_enabled"):
+        summary += f" cache_prior_override_rate={stats.get('cache_prior_override_rate', 0.0):.1%}"
     return summary
 
 
@@ -67,12 +69,27 @@ def main() -> int:
     parser.add_argument("--device", default=_default_device())
     parser.add_argument("--prefetch", action="store_true")
     parser.add_argument("--et-routing", action="store_true", dest="et_routing")
+    parser.add_argument("--max-experts", type=int, default=64, dest="max_experts")
+    parser.add_argument("--max-warm-cache", type=int, default=256, dest="max_warm_cache")
+    parser.add_argument(
+        "--pin-top-experts",
+        type=int,
+        nargs="?",
+        const=50,
+        default=0,
+        dest="pin_top_experts",
+        metavar="N",
+        help="Pin the N most-used experts in RAM (never evict). Default when flag is present: 50. 0=disabled.",
+    )
     args = parser.parse_args()
 
     print(f"model={args.model}")
     print(f"device={args.device}")
     print(f"prompt={args.prompt!r}")
     print(f"target_new_tokens={args.tokens}")
+    print(f"max_experts_in_memory={args.max_experts}")
+    print(f"max_warm_cache={args.max_warm_cache}")
+    print(f"pin_top_experts={args.pin_top_experts}")
     print("loading paged model...", flush=True)
 
     load_t0 = time.perf_counter()
@@ -82,6 +99,8 @@ def main() -> int:
         device=args.device,
         prefetch=True if args.prefetch else None,
         et_routing=True if args.et_routing else None,
+        max_experts_in_memory=args.max_experts,
+        max_warm_cache=args.max_warm_cache,
     )
     _sync(args.device)
     load_s = time.perf_counter() - load_t0
@@ -98,6 +117,9 @@ def main() -> int:
     else:
         device_name = str(device)
     input_ids = torch.tensor([prompt_ids], dtype=torch.long, device=device_name)
+
+    if args.pin_top_experts > 0 and hasattr(loaded.model, "outlier_page_manager"):
+        loaded.model.outlier_page_manager.enable_expert_pinning(pin_top_k=args.pin_top_experts)
 
     print(f"backend={loaded.backend}")
     print(f"prompt_tokens={input_ids.shape[1]}")
@@ -144,11 +166,19 @@ def main() -> int:
             cache_snapshots.append(dict(stats) if stats else {})
             hot_cache_entries = stats.get("hot_cache_entries", 0) if stats else 0
             hot_cache_mb = stats.get("hot_cache_mb", 0.0) if stats else 0.0
+            pin_line = ""
+            if stats and stats.get("pinning_enabled"):
+                pin_line = (
+                    f" pinned_experts={stats.get('pinned_expert_count', 0)}"
+                    f" pinned_in_hot={stats.get('pinned_in_hot_cache', 0)}"
+                    f" pin_hit_rate={stats.get('pin_hit_rate', 0.0):.1%}"
+                )
             print(
                 f"token_{idx + 1}: latency_s={elapsed:.2f} "
                 f"text={token_text!r} {_format_cache(stats)} "
                 f"hot_cache_entries={hot_cache_entries} "
-                f"hot_cache_mb={hot_cache_mb:.1f} "
+                f"hot_cache_mb={hot_cache_mb:.1f}"
+                f"{pin_line} "
                 f"peak_rss_gb={_peak_rss_gb():.2f}",
                 flush=True,
             )
@@ -177,6 +207,9 @@ def main() -> int:
     print(f"hot_hit_rate_after_token_1={hot_hit_rate_after_first:.1%}")
     print(f"warm_hit_rate_after_token_1={warm_hit_rate_after_first:.1%}")
     print(f"cold_miss_rate_after_token_1={cold_miss_rate_after_first:.1%}")
+    if final_stats.get("cache_prior_enabled"):
+        print(f"cache_prior_override_rate={final_stats.get('cache_prior_override_rate', 0.0):.1%}")
+        print(f"cache_prior_overrides={int(final_stats.get('cache_prior_overrides', 0))}")
     if "prefetch_accuracy" in final_stats:
         print(f"prefetch_accuracy={final_stats.get('prefetch_accuracy', 0.0):.1%}")
         print(f"prefetches_issued={int(final_stats.get('prefetches_issued', 0))}")
@@ -187,6 +220,10 @@ def main() -> int:
         print(f"expert_count_histogram={final_stats.get('expert_count_histogram', {})}")
     print(f"hot_cache_entries={final_stats.get('hot_cache_entries', 0)}")
     print(f"hot_cache_mb={final_stats.get('hot_cache_mb', 0.0):.1f}")
+    if final_stats.get("pinning_enabled"):
+        print(f"pinned_expert_count={final_stats.get('pinned_expert_count', 0)}")
+        print(f"pinned_in_hot_cache={final_stats.get('pinned_in_hot_cache', 0)}")
+        print(f"pin_hit_rate={final_stats.get('pin_hit_rate', 0.0):.1%}")
     print(f"final_cache_stats={final_stats}")
     print(f"peak_rss_gb={_peak_rss_gb():.2f}")
     print(f"generated_text={''.join(token_texts)!r}")

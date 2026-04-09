@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from collections import OrderedDict
 
+import pytest
 import torch
 
-from outlier_engine.paging import ExpertPageManager, _ExpertWeights
+from outlier_engine.paging import ExpertPageManager, ExpertUsageTracker, _ExpertWeights
 
 
 def _tiny_weights() -> _ExpertWeights:
@@ -39,6 +40,8 @@ def _make_manager(*, hot_capacity: int = 2, warm_capacity: int = 4, device: str 
     mgr._packed_experts_dir = None
     mgr._fmt = "real"
     mgr._debug_log = lambda message: None
+    mgr._usage_tracker = None
+    mgr._pinned = frozenset()
     return mgr
 
 
@@ -124,3 +127,85 @@ def test_cache_stats_tracking(monkeypatch):
     assert stats["cold_misses"] == 1
     assert stats["lookups"] == 3
     assert stats["hot_cache_entries"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# ExpertUsageTracker tests
+# ---------------------------------------------------------------------------
+
+def test_usage_tracker_pins_after_threshold():
+    tracker = ExpertUsageTracker(pin_after_tokens=3, pin_top_k=2)
+
+    # Record expert accesses: (0,0) most frequent
+    for _ in range(5):
+        tracker.record(0, 0)
+    for _ in range(2):
+        tracker.record(0, 1)
+    tracker.record(0, 2)
+
+    # No pinning yet — threshold not reached
+    assert tracker.pinned == frozenset()
+
+    for _ in range(3):
+        tracker.on_token()
+
+    # After 3 tokens, top-2 should be pinned
+    assert tracker.pinned == {(0, 0), (0, 1)}
+
+
+def test_usage_tracker_pin_hit_rate():
+    tracker = ExpertUsageTracker(pin_after_tokens=1, pin_top_k=1)
+    tracker.record(0, 0)
+    tracker.on_token()  # triggers pinning: (0,0) is pinned
+
+    tracker.record(0, 0)  # pin hit
+    tracker.record(0, 1)  # not pinned
+
+    # 3 total lookups (including pre-pin record), 1 hit after pinning
+    assert tracker.pin_hit_rate == pytest.approx(1 / 3)
+
+
+# ---------------------------------------------------------------------------
+# Pinned-eviction integration tests
+# ---------------------------------------------------------------------------
+
+def test_pinned_expert_not_evicted(monkeypatch):
+    """A pinned expert must survive when the hot cache is full."""
+    mgr = _make_manager(hot_capacity=2, warm_capacity=8)
+    monkeypatch.setattr(mgr, "_load_expert_from_disk", lambda layer, expert: _tiny_weights())
+
+    mgr.enable_expert_pinning(pin_top_k=1, pin_after_tokens=2)
+
+    # Access (0,0) many times to make it the top expert
+    for _ in range(5):
+        mgr.get_expert(0, 0)
+    mgr.get_expert(0, 1)
+
+    # Simulate 2 tokens to trigger pinning
+    mgr.debug_forward_start("tok1")
+    mgr.debug_forward_start("tok2")
+
+    assert (0, 0) in mgr._pinned
+
+    # Fill the hot cache, then add a new expert — (0,0) must NOT be evicted
+    mgr.get_expert(0, 2)  # evicts LRU non-pinned entry
+    assert (0, 0) in mgr._hot_cache
+
+
+def test_cache_stats_reports_pinning(monkeypatch):
+    mgr = _make_manager(hot_capacity=4, warm_capacity=8)
+    monkeypatch.setattr(mgr, "_load_expert_from_disk", lambda layer, expert: _tiny_weights())
+
+    # Without pinning enabled
+    stats = mgr.cache_stats()
+    assert stats["pinning_enabled"] is False
+    assert stats["pinned_expert_count"] == 0
+
+    # Enable pinning and trigger threshold
+    mgr.enable_expert_pinning(pin_top_k=1, pin_after_tokens=1)
+    mgr.get_expert(0, 0)
+    mgr.debug_forward_start("tok1")  # triggers pinning
+
+    stats = mgr.cache_stats()
+    assert stats["pinning_enabled"] is True
+    assert stats["pinned_expert_count"] == 1

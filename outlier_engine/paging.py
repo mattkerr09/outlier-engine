@@ -1142,6 +1142,47 @@ class _HybridPagedMLP(nn.Module):
         return (shared_out + expert_out).to(x.dtype).view(batch, seq_len, hidden_dim)
 
 
+class ExpertUsageTracker:
+    """Tracks per-expert selection frequency to support hot expert pinning.
+
+    After ``pin_after_tokens`` forward passes, the ``pin_top_k`` most-used
+    experts are frozen into ``pinned`` — a frozenset of (layer, expert) keys
+    that the page manager will never evict from the hot cache.
+    """
+
+    def __init__(self, pin_after_tokens: int = 100, pin_top_k: int = 50) -> None:
+        self.pin_after_tokens = pin_after_tokens
+        self.pin_top_k = pin_top_k
+        self._counts: Counter = Counter()
+        self._tokens_seen: int = 0
+        self._pinned: frozenset = frozenset()
+        self._pin_hits: int = 0
+        self._pin_lookups: int = 0
+
+    def record(self, layer_idx: int, expert_idx: int) -> None:
+        """Record an expert selection; updates pin-hit counters."""
+        key = (layer_idx, expert_idx)
+        self._counts[key] += 1
+        self._pin_lookups += 1
+        if key in self._pinned:
+            self._pin_hits += 1
+
+    def on_token(self) -> None:
+        """Call once per generated token. Locks in the pinned set at threshold."""
+        self._tokens_seen += 1
+        if self._tokens_seen == self.pin_after_tokens:
+            top = self._counts.most_common(self.pin_top_k)
+            self._pinned = frozenset(k for k, _ in top)
+
+    @property
+    def pinned(self) -> frozenset:
+        return self._pinned
+
+    @property
+    def pin_hit_rate(self) -> float:
+        return self._pin_hits / self._pin_lookups if self._pin_lookups > 0 else 0.0
+
+
 class ExpertPageManager:
     """Reusable expert pager for hybrid HF and legacy paged runtimes."""
 
@@ -1176,6 +1217,8 @@ class ExpertPageManager:
         self._hot_evictions = 0
         self._disk_loads = 0
         self._disk_load_s = 0.0
+        self._usage_tracker: ExpertUsageTracker | None = None
+        self._pinned: frozenset = frozenset()
         self._tensor_shard_index: Dict[str, str] = {}
         self._packed_index: Dict[str, Dict[str, object]] = {}
         self._packed_experts_dir = Path(packed_experts_dir).expanduser() if packed_experts_dir else None
@@ -1219,6 +1262,10 @@ class ExpertPageManager:
             f"{tag}: hot_cache={len(self._hot_cache)}/{self.max_experts_in_memory} "
             f"warm_cache={len(self._cpu_cache)}/{self.max_warm_cache}"
         )
+        tracker = getattr(self, "_usage_tracker", None)
+        if tracker is not None:
+            tracker.on_token()
+            self._pinned = tracker.pinned
 
     def _build_shard_index(self) -> None:
         from safetensors import safe_open
@@ -1291,6 +1338,15 @@ class ExpertPageManager:
         if routers is None or layer_idx >= len(routers):
             return None
         return routers[layer_idx]
+
+    def enable_expert_pinning(self, pin_top_k: int = 50, pin_after_tokens: int = 100) -> None:
+        """Enable hot expert pinning. After ``pin_after_tokens`` tokens the top-K
+        most-used experts are permanently pinned and never evicted from the hot cache."""
+        self._usage_tracker = ExpertUsageTracker(
+            pin_after_tokens=pin_after_tokens,
+            pin_top_k=pin_top_k,
+        )
+        self._pinned = frozenset()
 
     def cached_expert_ids(self, layer_idx: int) -> set[int]:
         with self._get_lock():
@@ -1368,6 +1424,10 @@ class ExpertPageManager:
         self._debug_log(f"lookup key={key}")
         lookup_t0 = time.perf_counter() if _profile_enabled() else 0.0
 
+        tracker = getattr(self, "_usage_tracker", None)
+        if tracker is not None:
+            tracker.record(layer_idx, expert_idx)
+
         with self._get_lock():
             if key in self._hot_cache:
                 self._hot_cache.move_to_end(key)
@@ -1421,7 +1481,16 @@ class ExpertPageManager:
                 self._hot_hits += 1
                 return self._hot_cache[key]
             if len(self._hot_cache) >= self.max_experts_in_memory:
-                evicted_key, _ = self._hot_cache.popitem(last=False)
+                pinned = getattr(self, "_pinned", frozenset())
+                evicted_key = None
+                for candidate in self._hot_cache:
+                    if candidate not in pinned:
+                        evicted_key = candidate
+                        break
+                if evicted_key is None:
+                    evicted_key, _ = self._hot_cache.popitem(last=False)
+                else:
+                    del self._hot_cache[evicted_key]
                 self._hot_evictions += 1
                 self._debug_log(f"evict hot key={evicted_key}")
             self._hot_cache[key] = weights_hot
@@ -1526,6 +1595,19 @@ class ExpertPageManager:
             "warm_cache_entries": len(self._cpu_cache),
             "warm_cache_mb": warm_cache_bytes / 1024**2,
         }
+        tracker = getattr(self, "_usage_tracker", None)
+        pinned = getattr(self, "_pinned", frozenset())
+        if tracker is not None:
+            pinned_in_hot = sum(1 for k in self._hot_cache if k in pinned)
+            stats["pinning_enabled"] = True
+            stats["pinned_expert_count"] = len(pinned)
+            stats["pinned_in_hot_cache"] = pinned_in_hot
+            stats["pin_hit_rate"] = tracker.pin_hit_rate
+        else:
+            stats["pinning_enabled"] = False
+            stats["pinned_expert_count"] = 0
+            stats["pinned_in_hot_cache"] = 0
+            stats["pin_hit_rate"] = 0.0
         stats.update(self.prefetch_stats())
         stats.update(self.et_routing_stats())
         stats.update(self.cache_prior_stats())
