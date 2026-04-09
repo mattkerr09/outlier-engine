@@ -1,0 +1,35 @@
+{
+  "status": "complete",
+  "model_ref": "/mnt/200gb/Outlier-10B",
+  "layers": {
+    "start": null,
+    "end": null
+  },
+  "experts_trained": 224,
+  "experts_target": 224,
+  "steps_per_expert": 200,
+  "lr": 0.0001,
+  "router_summary": {
+    "router_loss": 1.8583292961120605,
+    "router_time_s": 645.9919960920015,
+    "hot_hits": 0,
+    "warm_hits": 0,
+    "cold_misses": 11332,
+    "hit_rate": 0.0,
+    "disk_load_s": 11.872422155018285,
+    "hot_cache_entries": 64
+  },
+  "checkpoint_size_bytes": 60858673440,
+  "checkpoint_size_gb": 56.67905643582344,
+  "total_time_min": 428.64574625085,
+  "peak_memory_gb": 48.84245300292969,
+  "avg_final_loss": 1.2871290898349668,
+  "avg_delta_sparsity": 0.9999996492905276,
+  "avg_cosine_to_shared": 0.9971839000603983,
+  "diversity": {
+    "avg_pairwise_cosine": 0.9909086824983967,
+    "min_pairwise_cosine": 0.940385103225708,
+    "avg_delta_sparsity": 0.33122109102883507,
+    "v1_pairwise_cosine": 1.0
+  }
+}
