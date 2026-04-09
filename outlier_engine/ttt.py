@@ -591,20 +591,30 @@ def _compute_perplexity(loaded, prompt_ids: List[int], response_ids: List[int]) 
 
 
 def _generate_ids(loaded, prompt_ids: List[int], max_tokens: int = 30) -> List[int]:
-    """Greedy-generate max_tokens token IDs after prompt."""
+    """Greedy-generate max_tokens token IDs after prompt.
+
+    Uses KV cache so each step processes only 1 new token (O(n) total).
+    """
     model = loaded.model
     device = torch.device(loaded.device)
     inp = torch.tensor([prompt_ids], dtype=torch.long, device=device)
     eos = getattr(loaded.tokenizer, "eos_token_id", None)
     generated = []
+    past_key_values = None
     with torch.no_grad():
         for _ in range(max_tokens):
-            out = model(input_ids=inp, use_cache=False)
+            out = model(
+                input_ids=inp,
+                use_cache=True,
+                past_key_values=past_key_values,
+            )
             next_id = int(out.logits[0, -1].argmax().item())
             generated.append(next_id)
+            past_key_values = out.past_key_values
             if eos is not None and next_id == eos:
                 break
-            inp = torch.cat([inp, torch.tensor([[next_id]], device=device)], dim=1)
+            # After the first (prompt) pass, feed only the single new token
+            inp = torch.tensor([[next_id]], dtype=torch.long, device=device)
     return generated
 
 
