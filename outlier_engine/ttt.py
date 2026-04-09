@@ -452,7 +452,7 @@ def run_experiment_1(
 
     Returns summary dict with before/after alpha states.
     """
-    check_ram(15.0, "exp1-start")
+    check_ram(8.0, "exp1-start")
     model = loaded.model
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
@@ -481,7 +481,7 @@ def run_experiment_1(
     ]
 
     for domain_name, domain_text in domains:
-        check_ram(15.0, f"exp1-{domain_name}-start")
+        check_ram(8.0, f"exp1-{domain_name}-start")
 
         # Reset to initial alphas for each domain profile
         for layer_idx, mlp in _get_moe_layers(model):
@@ -520,7 +520,7 @@ def run_experiment_1(
             "profile": profile,
         }
 
-        check_ram(15.0, f"exp1-{domain_name}-end")
+        check_ram(8.0, f"exp1-{domain_name}-end")
 
     # Restore initial alphas
     for layer_idx, mlp in _get_moe_layers(model):
@@ -624,7 +624,7 @@ def run_experiment_3(
 
     Returns comparison table.
     """
-    check_ram(15.0, "exp3-start")
+    check_ram(8.0, "exp3-start")
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
@@ -644,7 +644,7 @@ def run_experiment_3(
     for config_name, roe_k in configs:
         print(f"\n[Exp 3] Config: {config_name} (roe_k={roe_k})", flush=True)
         pm.enable_roe(roe_k)
-        check_ram(15.0, f"exp3-{config_name}")
+        check_ram(8.0, f"exp3-{config_name}")
 
         for prompt_text in prompts:
             prompt_ids = _tokenize(loaded, prompt_text)
@@ -706,7 +706,7 @@ def run_experiment_3(
     out_file = out_path / "roe_comparison.json"
     out_file.write_text(json.dumps(result, indent=2), encoding="utf-8")
     print(f"Saved: {out_file}")
-    check_ram(15.0, "exp3-end")
+    check_ram(8.0, "exp3-end")
     return result
 
 
@@ -884,7 +884,7 @@ def run_experiment_4(
     Collects (hidden_before_attn, next_layer_experts) pairs, trains a linear
     predictor, and reports prediction accuracy.
     """
-    check_ram(15.0, "exp4-start")
+    check_ram(8.0, "exp4-start")
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
@@ -901,7 +901,7 @@ def run_experiment_4(
     if not traces:
         return {"error": "No traces collected"}
 
-    check_ram(15.0, "exp4-after-traces")
+    check_ram(8.0, "exp4-after-traces")
 
     print(f"\n[Exp 4] Training predictors on {len(traces)} traces …")
     predictors, accuracies = train_routing_predictor(
@@ -931,7 +931,7 @@ def run_experiment_4(
     print(f"Saved: {pred_path}")
     print(f"Saved: {trace_path}")
 
-    check_ram(15.0, "exp4-end")
+    check_ram(8.0, "exp4-end")
 
     return {
         "n_traces": len(traces),

@@ -140,7 +140,7 @@ def run_experiment_2(
 
     Returns summary dict with generation samples and switch timing.
     """
-    check_ram(15.0, "exp2-start")
+    check_ram(8.0, "exp2-start")
     out_path = Path(output_dir)
 
     # Check that profiles from Experiment 1 exist
@@ -200,5 +200,5 @@ def run_experiment_2(
     summary_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
     print(f"Saved: {summary_path}")
 
-    check_ram(15.0, "exp2-end")
+    check_ram(8.0, "exp2-end")
     return results

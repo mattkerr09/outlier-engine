@@ -186,7 +186,7 @@ print(f"Saved: {OUT}/exp2_summary.json", flush=True)
 print("\n" + "="*60)
 print("EXPERIMENT 3: RoE ensemble quality comparison")
 print("="*60, flush=True)
-check_ram(15.0, "exp3-start")
+check_ram(8.0, "exp3-start")
 
 exp3_results = run_experiment_3(loaded, OUT, n_prompts=20, n_responses_each=5, max_tokens=30)
 with open(f"{OUT}/exp3_summary.json", "w") as f:
@@ -199,7 +199,7 @@ print(f"Saved: {OUT}/exp3_summary.json", flush=True)
 print("\n" + "="*60)
 print("EXPERIMENT 4: Pre-attention routing trace + predictor")
 print("="*60, flush=True)
-check_ram(15.0, "exp4-start")
+check_ram(8.0, "exp4-start")
 
 exp4_results = run_experiment_4(loaded, OUT, max_tokens=300, n_epochs=50)
 with open(f"{OUT}/exp4_summary.json", "w") as f:
