@@ -109,10 +109,30 @@ def _discover_artifacts(model_dir: Path) -> Dict[str, Any]:
     safetensors_files = sorted(model_dir.rglob("*.safetensors"))
     pt_files = sorted(model_dir.rglob("*.pt"))
     expert_files = [path for path in pt_files if path.name.startswith("expert_")]
+    alpha_json_files = sorted(model_dir.rglob("alpha.json"))
+    alpha_tensor_count = 0
+    sample_alpha_tensors: list[str] = []
+    try:
+        from safetensors import safe_open
+    except ImportError:
+        safe_open = None
+    if safe_open is not None:
+        for path in safetensors_files:
+            with safe_open(str(path), framework="pt", device="cpu") as f:
+                keys = [key for key in f.keys() if "alpha" in key.lower()]
+                alpha_tensor_count += len(keys)
+                for key in keys:
+                    if len(sample_alpha_tensors) >= 5:
+                        break
+                    sample_alpha_tensors.append(f"{path.relative_to(model_dir)}::{key}")
     return {
         "safetensors_count": len(safetensors_files),
         "pt_count": len(pt_files),
         "expert_pt_count": len(expert_files),
+        "alpha_json_count": len(alpha_json_files),
+        "sample_alpha_jsons": [str(path.relative_to(model_dir)) for path in alpha_json_files[:5]],
+        "alpha_tensor_count": alpha_tensor_count,
+        "sample_alpha_tensors": sample_alpha_tensors,
         "sample_safetensors": [str(path.relative_to(model_dir)) for path in safetensors_files[:5]],
         "sample_expert_pts": [str(path.relative_to(model_dir)) for path in expert_files[:5]],
     }
@@ -150,6 +170,10 @@ def inspect_model(model_ref: str, token: Optional[str] = None) -> Dict[str, Any]
             "safetensors_count": sum(1 for name in siblings if name.endswith(".safetensors")),
             "pt_count": sum(1 for name in siblings if name.endswith(".pt")),
             "expert_pt_count": sum(1 for name in siblings if name.endswith(".pt") and "/expert_" in name),
+            "alpha_json_count": sum(1 for name in siblings if name.endswith("alpha.json")),
+            "sample_alpha_jsons": [name for name in siblings if name.endswith("alpha.json")][:5],
+            "alpha_tensor_count": 0,
+            "sample_alpha_tensors": [],
             "sample_safetensors": [name for name in siblings if name.endswith(".safetensors")][:5],
             "sample_expert_pts": [name for name in siblings if name.endswith(".pt") and "/expert_" in name][:5],
         }

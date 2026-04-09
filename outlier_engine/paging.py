@@ -57,7 +57,7 @@ import warnings
 from collections import Counter, OrderedDict
 from pathlib import Path
 from types import MethodType
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import torch
@@ -139,6 +139,158 @@ def _sync_device(device: torch.device | str) -> None:
 def _profile_log(message: str) -> None:
     if _profile_enabled():
         print(f"[OUTLIER_PROFILE] {message}", flush=True)
+
+
+def _parse_layer_idx(value: str) -> int | None:
+    for pattern in (
+        r"^(?:layers?|layer)[._](\d+)$",
+        r"(?:^|[._])(?:layers?|layer)[._](\d+)(?:[._]|$)",
+    ):
+        match = re.search(pattern, value)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _parse_expert_idx(value: str) -> int | None:
+    for pattern in (
+        r"^(?:experts?|expert)[._](\d+)$",
+        r"(?:^|[._])(?:experts?|expert)[._](\d+)(?:[._]|$)",
+    ):
+        match = re.search(pattern, value)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _scalar_alpha(value: Any) -> float | None:
+    if isinstance(value, torch.Tensor):
+        if value.numel() != 1:
+            return None
+        return float(value.detach().reshape(-1)[0].item())
+    if isinstance(value, np.ndarray):
+        if value.size != 1:
+            return None
+        return float(value.reshape(-1)[0].item())
+    if isinstance(value, (float, int, np.floating, np.integer)):
+        return float(value)
+    return None
+
+
+def _collect_alpha_entries(
+    payload: Any,
+    out: dict[int, dict[int, float]],
+    *,
+    layer_idx: int | None = None,
+    expert_idx: int | None = None,
+) -> None:
+    if isinstance(payload, torch.Tensor):
+        if payload.ndim == 0:
+            payload = payload.item()
+        else:
+            payload = payload.detach().cpu().tolist()
+    elif isinstance(payload, np.ndarray):
+        if payload.ndim == 0:
+            payload = payload.item()
+        else:
+            payload = payload.tolist()
+
+    scalar = _scalar_alpha(payload)
+    if scalar is not None:
+        if layer_idx is not None and expert_idx is not None:
+            out.setdefault(layer_idx, {})[expert_idx] = scalar
+        return
+
+    if isinstance(payload, (list, tuple)):
+        if layer_idx is None:
+            for next_layer_idx, value in enumerate(payload):
+                _collect_alpha_entries(value, out, layer_idx=next_layer_idx)
+            return
+        if expert_idx is None:
+            for next_expert_idx, value in enumerate(payload):
+                _collect_alpha_entries(value, out, layer_idx=layer_idx, expert_idx=next_expert_idx)
+        return
+
+    if not isinstance(payload, dict):
+        return
+
+    for raw_key, value in payload.items():
+        key = str(raw_key)
+        key_lower = key.lower()
+        next_layer_idx = layer_idx
+        next_expert_idx = expert_idx
+
+        parsed_layer_idx = _parse_layer_idx(key_lower)
+        if parsed_layer_idx is not None:
+            next_layer_idx = parsed_layer_idx
+        parsed_expert_idx = _parse_expert_idx(key_lower)
+        if parsed_expert_idx is not None:
+            next_expert_idx = parsed_expert_idx
+        if key.isdigit():
+            if layer_idx is None:
+                next_layer_idx = int(key)
+            elif expert_idx is None:
+                next_expert_idx = int(key)
+
+        if key_lower in {
+            "alpha",
+            "alphas",
+            "expert_alpha",
+            "expert_alphas",
+            "experts",
+            "layer_alpha",
+            "layer_alphas",
+            "layers",
+            "per_expert",
+            "per_layer",
+            "values",
+        }:
+            _collect_alpha_entries(value, out, layer_idx=layer_idx, expert_idx=expert_idx)
+            continue
+
+        _collect_alpha_entries(value, out, layer_idx=next_layer_idx, expert_idx=next_expert_idx)
+
+
+def _load_hybrid_expert_alphas(
+    model_dir: Path,
+    *,
+    n_layers: int,
+    n_experts: int,
+) -> dict[int, dict[int, float]]:
+    alphas: dict[int, dict[int, float]] = {}
+
+    for alpha_path in sorted(model_dir.rglob("alpha.json")):
+        try:
+            payload = json.loads(alpha_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            warnings.warn(f"Failed to read alpha sidecar {alpha_path}: {exc}", stacklevel=2)
+            continue
+        _collect_alpha_entries(payload, alphas)
+
+    try:
+        from safetensors import safe_open
+    except ImportError:
+        safe_open = None
+
+    if safe_open is not None:
+        for shard in sorted(model_dir.glob("*.safetensors")):
+            with safe_open(str(shard), framework="pt", device="cpu") as f:
+                alpha_keys = [key for key in f.keys() if "alpha" in key.lower()]
+                for key in alpha_keys:
+                    _collect_alpha_entries({key: f.get_tensor(key)}, alphas)
+
+    filtered: dict[int, dict[int, float]] = {}
+    for layer_idx, layer_alphas in alphas.items():
+        if layer_idx < 0 or layer_idx >= n_layers:
+            continue
+        filtered_layer = {
+            expert_idx: float(alpha)
+            for expert_idx, alpha in layer_alphas.items()
+            if 0 <= expert_idx < n_experts
+        }
+        if filtered_layer:
+            filtered[layer_idx] = filtered_layer
+    return filtered
 
 
 # ---------------------------------------------------------------------------
@@ -596,6 +748,11 @@ def load_hybrid_paged_qwen(
     model_dir = Path(model_path)
     with open(model_dir / "config.json") as f:
         cfg = _normalize_config(json.load(f))
+    layer_alphas = _load_hybrid_expert_alphas(
+        model_dir,
+        n_layers=cfg["n_layers"],
+        n_experts=cfg.get("n_experts", 0),
+    )
 
     hf_cfg = Qwen2Config(
         vocab_size=cfg["vocab_size"],
@@ -630,6 +787,7 @@ def load_hybrid_paged_qwen(
                 cfg.get("top_k", 2),
                 layer_idx=layer_idx,
                 page_manager=None,
+                alphas=layer_alphas.get(layer_idx),
             )
 
     model = model.to_empty(device=torch.device(device))
@@ -902,12 +1060,14 @@ class _HybridPagedMLP(nn.Module):
         top_k: int,
         layer_idx: int,
         page_manager: "ExpertPageManager | None" = None,
+        alphas: Optional[Dict[int, float]] = None,
     ) -> None:
         super().__init__()
         self.n_experts = n_experts
         self.top_k = top_k
         self.layer_idx = layer_idx
         self.page_manager = page_manager
+        self.alphas = {int(expert_idx): float(alpha) for expert_idx, alpha in (alphas or {}).items()}
         self.router_weight = nn.Parameter(
             torch.empty(n_experts, hidden_dim), requires_grad=False
         )
@@ -959,7 +1119,12 @@ class _HybridPagedMLP(nn.Module):
                 (selected_w[0] * (selected_idx[0] == eid).to(selected_w.dtype)).sum()
                 for eid in used_expert_ids
             ]).to(dtype=batched_out.dtype, device=batched_out.device)  # [E]
-            expert_out[0] = (batched_out * w_vec.unsqueeze(-1)).sum(dim=0)  # [H]
+            alpha_vec = torch.tensor(
+                [self.alphas.get(int(eid), 1.0) for eid in used_expert_ids],
+                dtype=batched_out.dtype,
+                device=batched_out.device,
+            )
+            expert_out[0] = (batched_out * (w_vec * alpha_vec).unsqueeze(-1)).sum(dim=0)  # [H]
             return (shared_out + expert_out).to(x.dtype).view(batch, seq_len, hidden_dim)
 
         # Multi-token path (prefill) or OUTLIER_BATCHED=0: sequential per-expert loop
@@ -971,6 +1136,7 @@ class _HybridPagedMLP(nn.Module):
             weights = (selected_w * assignment.to(selected_w.dtype)).sum(dim=-1, keepdim=True)
             expert = self.page_manager.get_expert(self.layer_idx, int(expert_idx))
             out = _run_expert(x_flat[token_mask], expert).to(shared_out.dtype)
+            out = out * self.alphas.get(int(expert_idx), 1.0)
             expert_out[token_mask] += weights[token_mask] * out
 
         return (shared_out + expert_out).to(x.dtype).view(batch, seq_len, hidden_dim)
