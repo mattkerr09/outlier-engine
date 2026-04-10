@@ -593,26 +593,29 @@ def _compute_perplexity(loaded, prompt_ids: List[int], response_ids: List[int]) 
 def _generate_ids(loaded, prompt_ids: List[int], max_tokens: int = 30) -> List[int]:
     """Greedy-generate max_tokens token IDs after prompt.
 
-    Uses model.generate() with KV cache enabled, which correctly handles
-    position IDs, attention masks, and EOS stopping.
+    Uses use_cache=False with a manual decode loop to avoid KV-cache
+    attention shapes that require unique Metal shader compilations at every
+    step on MPS.  O(n²) in tokens but safe for small max_tokens.
     """
     model = loaded.model
     device = torch.device(loaded.device)
-    inp = torch.tensor([prompt_ids], dtype=torch.long, device=device)
     eos = getattr(loaded.tokenizer, "eos_token_id", None)
-    pad = getattr(loaded.tokenizer, "pad_token_id", eos)
+
+    current_ids = list(prompt_ids)
+    new_ids: List[int] = []
 
     with torch.no_grad():
-        out_ids = model.generate(
-            inp,
-            max_new_tokens=max_tokens,
-            do_sample=False,           # greedy — deterministic
-            eos_token_id=eos,
-            pad_token_id=pad if pad is not None else eos,
-            use_cache=True,
-        )
-    # out_ids is [1, prompt_len + new_tokens]; return only the new tokens
-    return out_ids[0, len(prompt_ids):].tolist()
+        for _ in range(max_tokens):
+            inp = torch.tensor([current_ids], dtype=torch.long, device=device)
+            out = model(input_ids=inp, use_cache=False)
+            next_id = int(out.logits[0, -1].argmax().item())
+            del out, inp   # ref-count drop; MPS buffers reclaimed lazily
+            if eos is not None and next_id == eos:
+                break
+            new_ids.append(next_id)
+            current_ids.append(next_id)
+
+    return new_ids
 
 
 def run_experiment_3(
@@ -653,10 +656,12 @@ def run_experiment_3(
         pm.enable_roe(roe_k)
         check_ram(8.0, f"exp3-{config_name}")
 
-        for prompt_text in prompts:
+        for p_idx, prompt_text in enumerate(prompts):
             prompt_ids = _tokenize(loaded, prompt_text)
             if not prompt_ids:
                 continue
+            print(f"  [{config_name}] prompt {p_idx+1}/{len(prompts)}: {prompt_text[:40]!r}",
+                  flush=True)
 
             for rep in range(n_responses_each):
                 resp_ids = _generate_ids(loaded, prompt_ids, max_tokens=max_tokens)
@@ -669,6 +674,7 @@ def run_experiment_3(
                     "rep": rep,
                     "perplexity": ppl,
                 })
+                print(f"    rep {rep+1}: ppl={ppl:.4f}", flush=True)
 
         print(f"  {config_name}: collected {sum(1 for r in rows if r['config'] == config_name)} rows")
 
@@ -749,8 +755,10 @@ def collect_routing_traces(
     def _make_pre_attn_hook(layer_idx: int):
         def hook(module, args):
             hidden = args[0]  # [1, seq, hidden]
-            # Detach and store per-token (last token only for incremental)
-            pre_attn[layer_idx] = hidden.detach().cpu()
+            # Stay on device — calling .cpu() here stalls the MPS pipeline at
+            # every layer boundary (28× per forward pass).  We batch-transfer
+            # all hidden states to CPU once after the full forward pass.
+            pre_attn[layer_idx] = hidden[:, 0, :].detach().clone()  # [1, hidden] on device
         return hook
 
     # Capture routing decisions
@@ -779,39 +787,54 @@ def collect_routing_traces(
 
     pm.record_layer_routing = _patched_record
 
-    # Register pre-attention hooks
+    # Register pre-attention hooks on the decoder layer (not self_attn directly).
+    # Newer transformers may call self_attn with keyword-only args, making args[]
+    # empty.  Decoder layers are always called with hidden_states as args[0].
     hooks = []
     for layer_idx, layer in enumerate(model.model.layers):
-        h = layer.self_attn.register_forward_pre_hook(_make_pre_attn_hook(layer_idx))
+        h = layer.register_forward_pre_hook(_make_pre_attn_hook(layer_idx))
         hooks.append(h)
 
-    # Run token-by-token to collect per-token traces
-    inp = torch.tensor([ids[:1]], dtype=torch.long, device=device)
+    # Run single-token forward passes (seq_len=1 always) to collect traces.
+    # This avoids the O(n³) cost and MPS shader-compilation storm of the
+    # growing-sequence approach: MPS compiles ONE kernel for [1,1,hidden] and
+    # reuses it for every subsequent token.  expert_ids from record_layer_routing
+    # is the set of experts selected for that single token — a clean per-token
+    # training label.
+    n_layers = len(model.model.layers)
     collected = 0
 
     try:
         with torch.no_grad():
-            for tok_idx in range(1, len(ids)):
+            for tok_id in ids:
                 pre_attn.clear()
                 routing_log.clear()
+                inp = torch.tensor([[tok_id]], dtype=torch.long, device=device)
                 out = model(input_ids=inp, use_cache=False)
+                del out  # free logits; we only need pre_attn + routing_log
+                # Batch-transfer hidden states to CPU in one shot — avoids 28
+                # per-layer MPS pipeline stalls that were costing ~6 s/token.
+                pre_attn_cpu = {k: v.cpu() for k, v in pre_attn.items()}
+                del inp
                 # Pair: pre_attn at layer L → routing at layer L+1
-                n_layers = len(model.model.layers)
                 for l in range(n_layers - 1):
-                    if l in pre_attn and (l + 1) in routing_log:
-                        hs = pre_attn[l][:, -1, :]  # [1, hidden] → last token
+                    if l in pre_attn_cpu and (l + 1) in routing_log:
+                        hs = pre_attn_cpu[l]  # [1, hidden] on CPU
                         traces.append((l, hs.squeeze(0), list(routing_log[l + 1])))
                 collected += 1
-                next_tok = int(out.logits[0, -1].argmax().item())
-                inp = torch.cat([inp, torch.tensor([[next_tok]], device=device)], dim=1)
                 if collected >= max_tokens:
                     break
     finally:
         for h in hooks:
             h.remove()
         pm.record_layer_routing = orig_record_fn
+        # Single cache flush after all tokens: for seq_len=1 passes the MPS
+        # allocator reuses freed weight temporaries across steps, so per-step
+        # empty_cache() is unnecessary and expensive (~5 s/call).
+        if torch.backends.mps.is_available():
+            torch.mps.empty_cache()
 
-    print(f"Collected {len(traces)} (layer, hidden, expert) traces over {collected} tokens")
+    print(f"Collected {len(traces)} (layer, hidden, expert) traces over {collected} tokens", flush=True)
     return traces
 
 
@@ -910,13 +933,13 @@ def run_experiment_4(
 
     check_ram(8.0, "exp4-after-traces")
 
-    print(f"\n[Exp 4] Training predictors on {len(traces)} traces …")
+    print(f"\n[Exp 4] Training predictors on {len(traces)} traces …", flush=True)
     predictors, accuracies = train_routing_predictor(
         traces, n_layers, n_experts, n_epochs=n_epochs
     )
 
     mean_acc = sum(accuracies.values()) / max(len(accuracies), 1)
-    print(f"\n[Exp 4] Mean prediction accuracy: {mean_acc:.3f}")
+    print(f"\n[Exp 4] Mean prediction accuracy: {mean_acc:.3f}", flush=True)
 
     # Save predictor weights
     pred_path = out_path / "routing_predictors.pt"
@@ -946,6 +969,836 @@ def run_experiment_4(
         "per_layer_accuracy": accuracies,
         "success": mean_acc >= 0.85,
     }
+
+
+# ---------------------------------------------------------------------------
+# MCQ data — Experiments 5, 6, 7
+# Format: {"question": str, "choices": [A, B, C, D], "answer": 0-3}
+# ---------------------------------------------------------------------------
+
+_MCQ_MEDICAL: List[Dict[str, Any]] = [
+    {"question": "Which chamber of the heart has the thickest muscular wall?",
+     "choices": ["Right atrium", "Right ventricle", "Left atrium", "Left ventricle"], "answer": 3},
+    {"question": "Metformin's primary mechanism of action in type 2 diabetes is:",
+     "choices": ["Stimulating pancreatic insulin secretion", "Reducing hepatic glucose production",
+                 "Blocking intestinal glucose absorption", "Increasing renal glucose excretion via SGLT2"],
+     "answer": 1},
+    {"question": "The vagus nerve (CN X) provides parasympathetic innervation to:",
+     "choices": ["Only the parotid gland", "The eye sphincter only",
+                 "The heart and most abdominal viscera", "Only the thoracic organs"],
+     "answer": 2},
+    {"question": "Penicillin antibiotics inhibit bacterial cell wall synthesis by targeting:",
+     "choices": ["DNA gyrase", "Transpeptidases (penicillin-binding proteins)",
+                 "The 30S ribosomal subunit", "Dihydrofolate reductase"],
+     "answer": 1},
+    {"question": "Which coagulation pathway is initiated by tissue factor (factor III)?",
+     "choices": ["Intrinsic pathway", "Common pathway", "Fibrinolytic pathway", "Extrinsic pathway"],
+     "answer": 3},
+    {"question": "Warfarin prevents clotting by inhibiting:",
+     "choices": ["Thrombin directly", "Factor Xa directly",
+                 "Synthesis of vitamin K-dependent clotting factors", "Platelet aggregation"],
+     "answer": 2},
+    {"question": "First-line treatment for generalized status epilepticus in adults is:",
+     "choices": ["IV phenytoin", "IV levetiracetam", "IV or rectal benzodiazepine", "IV phenobarbital"],
+     "answer": 2},
+    {"question": "HbA1c reflects average blood glucose levels over approximately:",
+     "choices": ["1 week", "2-4 weeks", "2-3 months", "6 months"],
+     "answer": 2},
+    {"question": "Atropine is a competitive antagonist at which receptor type?",
+     "choices": ["Nicotinic ACh receptors", "Muscarinic ACh receptors",
+                 "Beta-adrenergic receptors", "Alpha-1 adrenergic receptors"],
+     "answer": 1},
+    {"question": "Sensitivity of a diagnostic test is calculated as:",
+     "choices": ["TP / (TP + FP)", "TN / (TN + FP)", "TP / (TP + FN)", "TN / (TN + FN)"],
+     "answer": 2},
+    {"question": "Loop diuretics such as furosemide act on the:",
+     "choices": ["Proximal convoluted tubule", "Thin descending loop of Henle",
+                 "Thick ascending limb of the loop of Henle", "Collecting duct"],
+     "answer": 2},
+    {"question": "Phase 0 of the ventricular action potential (rapid upstroke) is caused by:",
+     "choices": ["Potassium efflux", "Calcium influx via L-type channels",
+                 "Rapid sodium influx via fast Na+ channels", "Chloride influx"],
+     "answer": 2},
+    {"question": "High-dose dopamine (>10 mcg/kg/min) causes vasoconstriction primarily via:",
+     "choices": ["Beta-1 adrenergic receptors", "Beta-2 adrenergic receptors",
+                 "Alpha-1 adrenergic receptors", "D1 dopaminergic receptors"],
+     "answer": 2},
+    {"question": "The anatomical structure separating the thoracic and abdominal cavities is:",
+     "choices": ["Pleura", "Peritoneum", "Diaphragm", "Mediastinum"],
+     "answer": 2},
+    {"question": "Which cranial nerve carries the afferent limb of the gag reflex?",
+     "choices": ["CN V (trigeminal)", "CN VII (facial)", "CN IX (glossopharyngeal)", "CN X (vagus)"],
+     "answer": 2},
+    {"question": "A patient with periorbital edema, frothy urine, and hypoalbuminemia most likely has:",
+     "choices": ["Nephritic syndrome", "Nephrotic syndrome", "Acute tubular necrosis", "Renal artery stenosis"],
+     "answer": 1},
+    {"question": "Which class of antibiotics inhibits bacterial protein synthesis at the 50S subunit?",
+     "choices": ["Fluoroquinolones", "Aminoglycosides", "Macrolides", "Beta-lactams"],
+     "answer": 2},
+    {"question": "Normal glomerular filtration rate (GFR) in a healthy young adult is approximately:",
+     "choices": ["25 mL/min", "60 mL/min", "120 mL/min", "200 mL/min"],
+     "answer": 2},
+    {"question": "The troponin complex inhibits muscle contraction by:",
+     "choices": ["Providing the myosin power stroke", "Cross-linking actin filaments",
+                 "Blocking actin-myosin interaction in the absence of Ca2+", "Hydrolyzing ATP"],
+     "answer": 2},
+    {"question": "ACE inhibitors are contraindicated in pregnancy primarily due to risk of:",
+     "choices": ["Maternal hypertension", "Fetal renal dysgenesis and oligohydramnios",
+                 "Maternal thrombosis", "Neonatal respiratory distress syndrome"],
+     "answer": 1},
+]
+
+_MCQ_CODING: List[Dict[str, Any]] = [
+    {"question": "What is the average-case time complexity of binary search on a sorted array of n elements?",
+     "choices": ["O(1)", "O(n)", "O(log n)", "O(n log n)"],
+     "answer": 2},
+    {"question": "In Python, `[x for x in range(5) if x % 2 == 0]` produces:",
+     "choices": ["[1, 3]", "[0, 2, 4]", "[0, 1, 2, 3, 4]", "[2, 4]"],
+     "answer": 1},
+    {"question": "A stack data structure follows which insertion/removal order?",
+     "choices": ["FIFO", "LIFO", "Priority-based", "Random access"],
+     "answer": 1},
+    {"question": "Which sorting algorithm guarantees O(n log n) worst-case time complexity?",
+     "choices": ["Quicksort", "Insertion sort", "Merge sort", "Bubble sort"],
+     "answer": 2},
+    {"question": "In Python, `dict.get(key, default)` returns what when the key is absent?",
+     "choices": ["Raises KeyError", "Returns None always", "Returns the default value", "Returns an empty dict"],
+     "answer": 2},
+    {"question": "Which data structure provides O(1) average-case lookup by key?",
+     "choices": ["Sorted array", "Linked list", "Binary search tree", "Hash table"],
+     "answer": 3},
+    {"question": "In SQL, which clause filters rows AFTER a GROUP BY aggregation?",
+     "choices": ["WHERE", "FROM", "HAVING", "ORDER BY"],
+     "answer": 2},
+    {"question": "The gradient descent parameter update subtracts:",
+     "choices": ["The loss value times the learning rate",
+                 "The learning rate times the gradient of the loss",
+                 "The gradient squared",
+                 "The parameter divided by the loss"],
+     "answer": 1},
+    {"question": "A Python generator function uses which keyword to yield values?",
+     "choices": ["return", "async", "yield", "lambda"],
+     "answer": 2},
+    {"question": "Big-O notation O(1) describes what type of algorithmic growth?",
+     "choices": ["Linear", "Logarithmic", "Constant", "Quadratic"],
+     "answer": 2},
+    {"question": "In REST API design, a POST request is conventionally used to:",
+     "choices": ["Retrieve a resource", "Update an existing resource completely",
+                 "Create a new resource", "Delete a resource"],
+     "answer": 2},
+    {"question": "In machine learning, regularization is primarily used to:",
+     "choices": ["Speed up gradient descent", "Reduce overfitting by penalizing large weights",
+                 "Increase model capacity", "Normalize input features"],
+     "answer": 1},
+    {"question": "A binary heap data structure is commonly used to implement:",
+     "choices": ["A FIFO queue", "A priority queue", "A hash table", "A sorted linked list"],
+     "answer": 1},
+    {"question": "The TCP protocol guarantees:",
+     "choices": ["Minimal latency", "Broadcast delivery",
+                 "Ordered, reliable byte-stream delivery", "Connectionless datagram delivery"],
+     "answer": 2},
+    {"question": "Which activation function is most susceptible to the vanishing gradient problem?",
+     "choices": ["ReLU", "Leaky ReLU", "Sigmoid", "ELU"],
+     "answer": 2},
+    {"question": "In databases, ACID stands for:",
+     "choices": ["Abstraction, Concurrency, Isolation, Durability",
+                 "Atomicity, Consistency, Isolation, Durability",
+                 "Atomicity, Concurrency, Integrity, Distribution",
+                 "Availability, Consistency, Integrity, Durability"],
+     "answer": 1},
+    {"question": "In Git, `git stash` is used to:",
+     "choices": ["Permanently delete uncommitted changes", "Merge two branches",
+                 "Temporarily save uncommitted changes without committing", "Revert the last commit"],
+     "answer": 2},
+    {"question": "Which algorithm uses a greedy approach to find single-source shortest paths?",
+     "choices": ["Floyd-Warshall", "Bellman-Ford", "Dijkstra's algorithm", "A* search"],
+     "answer": 2},
+    {"question": "In two's complement representation, the most significant bit indicates:",
+     "choices": ["The magnitude of the number", "Whether the number is positive or negative",
+                 "A carry bit for addition", "Whether the number is even or odd"],
+     "answer": 1},
+    {"question": "In Python, `*args` in a function definition captures:",
+     "choices": ["Exactly one required positional argument", "Keyword-only arguments",
+                 "An arbitrary number of positional arguments", "Type annotations"],
+     "answer": 2},
+]
+
+_MCQ_LEGAL: List[Dict[str, Any]] = [
+    {"question": "In contract law, 'consideration' refers to:",
+     "choices": ["The subjective intent of the offeror",
+                 "Something of legal value exchanged by each party",
+                 "The writing requirement for certain contracts",
+                 "The capacity of the contracting parties"],
+     "answer": 1},
+    {"question": "The Fourth Amendment to the U.S. Constitution protects citizens against:",
+     "choices": ["Self-incrimination", "Cruel and unusual punishment",
+                 "Unreasonable searches and seizures", "Double jeopardy"],
+     "answer": 2},
+    {"question": "Under respondeat superior, an employer is liable for:",
+     "choices": ["All intentional torts of any employee regardless of scope",
+                 "Torts of independent contractors",
+                 "Employee torts committed within the scope of employment",
+                 "Only criminal acts of employees"],
+     "answer": 2},
+    {"question": "A contract entered under duress is best characterized as:",
+     "choices": ["Void ab initio and unenforceable by either party",
+                 "Voidable at the option of the coerced party",
+                 "Fully enforceable because both parties agreed",
+                 "Illegal and subject to criminal sanctions"],
+     "answer": 1},
+    {"question": "The standard of proof in a civil lawsuit is:",
+     "choices": ["Beyond a reasonable doubt", "Clear and convincing evidence",
+                 "Preponderance of the evidence", "Probable cause"],
+     "answer": 2},
+    {"question": "The 'reasonable person' standard in negligence law is:",
+     "choices": ["Subjective to the individual defendant's capabilities",
+                 "That of a licensed professional",
+                 "An objective standard of ordinary care under similar circumstances",
+                 "That of the specific plaintiff"],
+     "answer": 2},
+    {"question": "First Amendment protection of free speech does NOT protect:",
+     "choices": ["Political dissent against the government", "Religious expression in public spaces",
+                 "True threats of imminent violence", "Satirical commentary on public officials"],
+     "answer": 2},
+    {"question": "A writ of habeas corpus is used to:",
+     "choices": ["Order a party to appear as a witness",
+                 "Challenge the legality of a person's detention",
+                 "Transfer a civil case to federal court",
+                 "Enjoin a party from taking an action"],
+     "answer": 1},
+    {"question": "Under Article I of the U.S. Constitution, Congress has express power to:",
+     "choices": ["Regulate interstate commerce", "Establish a national religion",
+                 "Override Supreme Court decisions by simple majority", "Abolish state governments"],
+     "answer": 0},
+    {"question": "A valid 'offer' in contract law must include:",
+     "choices": ["Acceptance signed by all parties",
+                 "Sufficient definiteness and manifestation of intent to be bound",
+                 "A written document with witnesses",
+                 "Monetary consideration stated explicitly"],
+     "answer": 1},
+    {"question": "The tort of battery requires proof of:",
+     "choices": ["Specific intent to harm the plaintiff",
+                 "Intentional, harmful or offensive contact with the plaintiff's person",
+                 "Reasonable apprehension of imminent contact",
+                 "Actual physical injury"],
+     "answer": 1},
+    {"question": "Under promissory estoppel, a promise is enforceable when:",
+     "choices": ["It is supported by traditional consideration",
+                 "The promisee reasonably relied on it to their detriment",
+                 "It is reduced to a signed writing",
+                 "The promisor had an attorney draft it"],
+     "answer": 1},
+    {"question": "The Supremacy Clause of the U.S. Constitution establishes that:",
+     "choices": ["The President is supreme over Congress in foreign policy",
+                 "Federal law is the supreme law of the land",
+                 "The Supreme Court automatically invalidates any conflicting state law",
+                 "Congress may override state constitutions by statute"],
+     "answer": 1},
+    {"question": "In criminal law, mens rea refers to:",
+     "choices": ["The prohibited physical act",
+                 "The guilty mind or criminal intent required for a crime",
+                 "The harm caused to the victim",
+                 "The defendant's legal defense"],
+     "answer": 1},
+    {"question": "An ex post facto law unconstitutionally:",
+     "choices": ["Applies only prospectively to future conduct",
+                 "Retroactively criminalizes conduct that was lawful when performed",
+                 "Is passed without legislative debate",
+                 "Creates a new constitutional right"],
+     "answer": 1},
+    {"question": "The doctrine of stare decisis requires courts to:",
+     "choices": ["Follow the opinions of leading legal scholars",
+                 "Follow precedent set by prior decisions on similar facts",
+                 "Defer to executive agencies on questions of law",
+                 "Apply strict textualism to all statutes"],
+     "answer": 1},
+    {"question": "A 'void contract' differs from a 'voidable contract' in that a void contract:",
+     "choices": ["Can be ratified by the parties later",
+                 "Is unenforceable from the start and cannot be ratified",
+                 "Is enforceable only if reduced to writing",
+                 "Requires court approval to cancel"],
+     "answer": 1},
+    {"question": "Miranda warnings must be given before interrogation when a suspect is:",
+     "choices": ["Briefly stopped for a traffic violation", "Voluntarily speaking with police",
+                 "In custody and subject to interrogation", "Represented by an attorney"],
+     "answer": 2},
+    {"question": "The parol evidence rule generally prohibits:",
+     "choices": ["Oral modification of a written contract after formation",
+                 "Prior oral agreements introduced to contradict a fully integrated written contract",
+                 "Any testimony about pre-contract negotiations",
+                 "Written evidence in oral contract disputes"],
+     "answer": 1},
+    {"question": "The Equal Protection Clause of the 14th Amendment was designed primarily to:",
+     "choices": ["Guarantee the right to vote to all citizens",
+                 "Protect against state discrimination, particularly against freed slaves",
+                 "Prohibit the federal government from creating classifications",
+                 "Guarantee equal pay for equal work"],
+     "answer": 1},
+]
+
+# New medical questions for Experiment 6 (distinct from _MCQ_MEDICAL)
+_MCQ_MEDICAL_NEW: List[Dict[str, Any]] = [
+    {"question": "Digoxin toxicity is potentiated by:",
+     "choices": ["Hyperkalemia", "Hypokalemia", "Hypernatremia", "Metabolic alkalosis only"],
+     "answer": 1},
+    {"question": "Initial fluid resuscitation of choice in septic shock is:",
+     "choices": ["5% albumin", "Packed red blood cells",
+                 "Balanced crystalloid (0.9% NS or lactated Ringer's)", "Hypertonic saline"],
+     "answer": 2},
+    {"question": "SSRIs treat depression primarily by:",
+     "choices": ["Blocking dopamine receptors", "Inhibiting monoamine oxidase",
+                 "Blocking presynaptic serotonin reuptake transporters", "Stimulating GABA-A receptors"],
+     "answer": 2},
+    {"question": "The most common cause of chronic kidney disease worldwide is:",
+     "choices": ["Hypertension", "Diabetes mellitus", "Glomerulonephritis", "Polycystic kidney disease"],
+     "answer": 1},
+    {"question": "INR (International Normalized Ratio) measures function of the:",
+     "choices": ["Intrinsic pathway only", "Extrinsic and common pathways",
+                 "Platelet aggregation", "Fibrinolytic pathway"],
+     "answer": 1},
+    {"question": "Which of the following is a live attenuated vaccine?",
+     "choices": ["Hepatitis B vaccine", "Inactivated influenza vaccine",
+                 "Measles-mumps-rubella (MMR) vaccine", "Tetanus toxoid"],
+     "answer": 2},
+    {"question": "A patient on MAO inhibitors who eats tyramine-rich food risks:",
+     "choices": ["Severe hypotension", "Hypertensive crisis", "Serotonin syndrome", "Agranulocytosis"],
+     "answer": 1},
+    {"question": "The normal resting membrane potential of cardiac ventricular myocytes is approximately:",
+     "choices": ["-90 mV", "-70 mV", "-55 mV", "0 mV"],
+     "answer": 0},
+    {"question": "Type 1 diabetes mellitus is primarily characterized by:",
+     "choices": ["Peripheral insulin resistance", "Autoimmune destruction of pancreatic beta cells",
+                 "Excessive glucagon secretion", "Impaired incretin effect"],
+     "answer": 1},
+    {"question": "Which lipoprotein is primarily responsible for reverse cholesterol transport?",
+     "choices": ["LDL", "VLDL", "HDL", "IDL"],
+     "answer": 2},
+    {"question": "The Fick principle calculates cardiac output from:",
+     "choices": ["Blood pressure divided by heart rate",
+                 "O2 consumption divided by the arteriovenous O2 difference",
+                 "Stroke volume times ejection fraction",
+                 "Mean arterial pressure divided by SVR"],
+     "answer": 1},
+    {"question": "Heparin-induced thrombocytopenia (HIT) is caused by:",
+     "choices": ["Direct bone marrow suppression",
+                 "Antibodies against platelet factor 4-heparin complexes",
+                 "Excessive fibrinolysis", "Complement activation directly"],
+     "answer": 1},
+    {"question": "Which neurotransmitter is depleted in Parkinson's disease?",
+     "choices": ["Acetylcholine", "GABA", "Dopamine", "Serotonin"],
+     "answer": 2},
+    {"question": "The zona glomerulosa of the adrenal cortex primarily secretes:",
+     "choices": ["Cortisol", "Androgens", "Aldosterone", "Epinephrine"],
+     "answer": 2},
+    {"question": "Iron-deficiency anemia produces which CBC pattern?",
+     "choices": ["Macrocytic, hypochromic", "Microcytic, hypochromic",
+                 "Normocytic, normochromic", "Macrocytic, normochromic"],
+     "answer": 1},
+    {"question": "The Krebs (TCA) cycle occurs in which cellular compartment?",
+     "choices": ["Cytoplasm", "Mitochondrial matrix",
+                 "Inner mitochondrial membrane", "Smooth endoplasmic reticulum"],
+     "answer": 1},
+    {"question": "Which beta-blocker is cardioselective (beta-1 selective)?",
+     "choices": ["Propranolol", "Carvedilol", "Metoprolol", "Labetalol"],
+     "answer": 2},
+    {"question": "Omeprazole (a PPI) irreversibly inhibits:",
+     "choices": ["H2 receptors on parietal cells", "Carbonic anhydrase",
+                 "H+/K+-ATPase on gastric parietal cells", "Gastrin receptors"],
+     "answer": 2},
+    {"question": "The complement membrane attack complex (MAC) is formed by:",
+     "choices": ["C3b opsonization on bacteria",
+                 "C5a-mediated neutrophil chemotaxis",
+                 "Polymerization of C5b-9",
+                 "MHC class II antigen presentation"],
+     "answer": 2},
+    {"question": "Acute subarachnoid hemorrhage classically presents with:",
+     "choices": ["Gradual onset unilateral headache with aura",
+                 "Sudden 'thunderclap' worst headache of life",
+                 "Frontal headache worsened by leaning forward",
+                 "Unilateral throbbing headache with photophobia for days"],
+     "answer": 1},
+]
+
+# General knowledge questions for Experiment 6 control (non-domain)
+_MCQ_GENERAL: List[Dict[str, Any]] = [
+    {"question": "The capital city of Australia is:",
+     "choices": ["Sydney", "Melbourne", "Canberra", "Brisbane"],
+     "answer": 2},
+    {"question": "Who wrote the dystopian novel '1984'?",
+     "choices": ["Aldous Huxley", "George Orwell", "Ray Bradbury", "Ernest Hemingway"],
+     "answer": 1},
+    {"question": "The speed of light in a vacuum is approximately:",
+     "choices": ["3×10^5 km/s", "3×10^8 m/s", "3×10^10 m/s", "3×10^6 m/s"],
+     "answer": 1},
+    {"question": "The French Revolution began in the year:",
+     "choices": ["1776", "1789", "1804", "1815"],
+     "answer": 1},
+    {"question": "The Pythagorean theorem states that for a right triangle:",
+     "choices": ["a + b = c", "a^2 + b^2 = c^2", "a x b = c^2", "a^2 - b^2 = c"],
+     "answer": 1},
+    {"question": "The currency of Japan is the:",
+     "choices": ["Yuan", "Won", "Rupee", "Yen"],
+     "answer": 3},
+    {"question": "Which planet is closest to the Sun?",
+     "choices": ["Venus", "Mars", "Mercury", "Earth"],
+     "answer": 2},
+    {"question": "'To be, or not to be' is from which Shakespeare play?",
+     "choices": ["Macbeth", "Hamlet", "King Lear", "Othello"],
+     "answer": 1},
+    {"question": "The chemical symbol Au represents:",
+     "choices": ["Silver", "Gold", "Platinum", "Aluminum"],
+     "answer": 1},
+    {"question": "The United Nations was founded in:",
+     "choices": ["1920", "1939", "1945", "1955"],
+     "answer": 2},
+    {"question": "Who published 'On the Origin of Species' in 1859?",
+     "choices": ["Gregor Mendel", "Charles Darwin", "Alfred Wallace", "Thomas Huxley"],
+     "answer": 1},
+    {"question": "Mount Everest is located on the border between:",
+     "choices": ["India and China", "Nepal and Tibet (China)", "India and Nepal", "Bhutan and China"],
+     "answer": 1},
+    {"question": "The human body contains how many pairs of chromosomes?",
+     "choices": ["22 pairs", "23 pairs", "24 pairs", "46 pairs"],
+     "answer": 1},
+    {"question": "The Amazon River flows through which continent?",
+     "choices": ["Africa", "Asia", "North America", "South America"],
+     "answer": 3},
+    {"question": "Which organelle is called the powerhouse of the cell?",
+     "choices": ["Ribosome", "Nucleus", "Mitochondria", "Golgi apparatus"],
+     "answer": 2},
+    {"question": "Photosynthesis converts CO2 and water into:",
+     "choices": ["ATP and water", "Glucose and oxygen", "Amino acids and nitrogen", "Lipids and CO2"],
+     "answer": 1},
+    {"question": "The Magna Carta was signed in the year:",
+     "choices": ["1066", "1215", "1265", "1453"],
+     "answer": 1},
+    {"question": "Einstein's equation E = mc^2 relates to:",
+     "choices": ["Gravitational potential energy", "Quantum uncertainty",
+                 "Mass-energy equivalence", "Electromagnetic force"],
+     "answer": 2},
+    {"question": "The Pacific Ocean is:",
+     "choices": ["The deepest but not the largest ocean",
+                 "Both the largest and deepest ocean",
+                 "The largest but not the deepest ocean",
+                 "The saltiest ocean"],
+     "answer": 1},
+    {"question": "DNA replication occurs during which phase of the cell cycle?",
+     "choices": ["G1 phase", "S phase", "G2 phase", "M phase"],
+     "answer": 1},
+]
+
+
+# ---------------------------------------------------------------------------
+# MCQ scoring helpers — shared by Experiments 5, 6, 7
+# ---------------------------------------------------------------------------
+
+# Fixed padding length for MCQ forward passes.  All MCQ questions are
+# right-padded to this length so that MPS compiles ONE kernel configuration
+# for the entire sprint instead of recompiling at every unique seq_len
+# (~18-34 s/compile on Apple Silicon).
+_MCQ_PAD_LEN: int = 256
+
+
+def _score_mcq(
+    loaded,
+    question: str,
+    choices: List[str],
+    correct_idx: int,
+) -> Tuple[int, float]:
+    """
+    Score a 4-choice MCQ question using log-likelihood at the answer token.
+
+    Formats as "Question: ...\\nA. ...\\nB. ...\\nC. ...\\nD. ...\\nAnswer:"
+    and compares log-prob of tokens ' A', ' B', ' C', ' D' at the final
+    position.  Returns (predicted_idx, log_prob_of_correct_answer).
+    """
+    tok = loaded.tokenizer
+    model = loaded.model
+    device = torch.device(loaded.device)
+    letters = ["A", "B", "C", "D"]
+
+    prefix = f"Question: {question}\n"
+    for i, ch in enumerate(choices):
+        prefix += f"{letters[i]}. {ch}\n"
+    prefix += "Answer:"
+
+    prefix_ids = tok.encode(prefix)
+    n_real = len(prefix_ids)
+
+    # Right-pad to _MCQ_PAD_LEN so all MCQ forward passes share one MPS kernel
+    # configuration (compiled once, not once per unique seq_len — each compile
+    # costs ~18-34 s on Apple Silicon).  Causal attention ensures padding tokens
+    # after position n_real-1 cannot affect logits at that position.
+    if n_real >= _MCQ_PAD_LEN:
+        prefix_ids = prefix_ids[-_MCQ_PAD_LEN:]  # keep trailing "Answer:" token
+        n_real = _MCQ_PAD_LEN
+    else:
+        prefix_ids = prefix_ids + [0] * (_MCQ_PAD_LEN - n_real)
+
+    # Resolve token ID for each answer letter (" A", " B", ...)
+    letter_tids: List[int] = []
+    for letter in letters:
+        ids = tok.encode(" " + letter)  # OutlierTokenizer.encode never adds special tokens
+        letter_tids.append(ids[-1])  # last token if multi-token (rare)
+
+    inp = torch.tensor([prefix_ids], dtype=torch.long, device=device)
+    with torch.no_grad():
+        out = model(input_ids=inp, use_cache=False)
+    # Score at the last REAL token (n_real-1), not the last padding position.
+    last_logits = out.logits[0, n_real - 1].float()
+    log_probs = F.log_softmax(last_logits, dim=-1)
+    scores = [log_probs[lid].item() for lid in letter_tids]
+
+    del out, inp, last_logits, log_probs
+    # Release MPS memory between questions.  The sequential expert loop at
+    # seq_len>1 allocates large bf16 temporaries; not flushing between questions
+    # can leave the MPS allocator fragmented and cause silent OOM crashes.
+    gc.collect()
+    if torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+
+    predicted = max(range(len(choices)), key=lambda i: scores[i])
+    return predicted, scores[correct_idx]
+
+
+def _eval_questions(loaded, questions: List[Dict[str, Any]]) -> Tuple[float, List[bool]]:
+    """Run _score_mcq on a list of questions, return (accuracy, per-q bool list)."""
+    hits: List[bool] = []
+    for q in questions:
+        pred, _ = _score_mcq(loaded, q["question"], q["choices"], q["answer"])
+        hits.append(pred == q["answer"])
+    return sum(hits) / max(len(hits), 1), hits
+
+
+# ---------------------------------------------------------------------------
+# Experiment 5: Domain-specific quality measurement
+# ---------------------------------------------------------------------------
+
+def run_experiment_5(
+    loaded,
+    output_dir: str = ".",
+    *,
+    profile_dir: Optional[str] = None,
+    n_questions: int = 5,
+) -> Dict[str, Any]:
+    """
+    Experiment 5: Does the alive model actually improve domain quality?
+
+    For each domain (medical/coding/legal), measures MCQ accuracy under:
+      - Default profile (all alphas = 1.0)
+      - Matched profile (domain-appropriate alpha recipe)
+      - Mismatched profile (wrong-domain recipe)
+
+    Uses log-likelihood scoring — one forward pass per question, no generation.
+    """
+    from .profiles import load_alpha_profile, reset_alpha_profile
+
+    check_ram(8.0, "exp5-start")
+    out_path = Path(output_dir)
+    profile_base = Path(profile_dir) if profile_dir else out_path
+
+    domains = [
+        ("medical", _MCQ_MEDICAL, "coding"),
+        ("coding",  _MCQ_CODING,  "legal"),
+        ("legal",   _MCQ_LEGAL,   "medical"),
+    ]
+
+    results: Dict[str, Any] = {}
+
+    for domain_name, questions, mismatch_name in domains:
+        questions = questions[:n_questions]
+        matched_path  = str(profile_base / f"{domain_name}_profile.json")
+        mismatch_path = str(profile_base / f"{mismatch_name}_profile.json")
+
+        if not Path(matched_path).exists():
+            print(f"[Exp 5] WARNING: missing profile {matched_path}, skipping {domain_name}")
+            results[domain_name] = {"error": f"missing profile: {matched_path}"}
+            continue
+
+        # ── Default ────────────────────────────────────────────────────────
+        reset_alpha_profile(loaded.model)
+        print(f"\n[Exp 5 / {domain_name}] Scoring {len(questions)} questions — DEFAULT profile …",
+              flush=True)
+        default_acc, default_hits = _eval_questions(loaded, questions)
+        print(f"  Default accuracy: {default_acc*100:.1f}%")
+
+        # ── Matched ────────────────────────────────────────────────────────
+        load_alpha_profile(loaded.model, matched_path)
+        print(f"[Exp 5 / {domain_name}] Scoring — MATCHED ({domain_name}) profile …", flush=True)
+        matched_acc, matched_hits = _eval_questions(loaded, questions)
+        print(f"  Matched accuracy: {matched_acc*100:.1f}%  "
+              f"delta={matched_acc - default_acc:+.3f}")
+
+        # ── Mismatched ─────────────────────────────────────────────────────
+        if Path(mismatch_path).exists():
+            load_alpha_profile(loaded.model, mismatch_path)
+            print(f"[Exp 5 / {domain_name}] Scoring — MISMATCHED ({mismatch_name}) profile …",
+                  flush=True)
+            mismatch_acc, mismatch_hits = _eval_questions(loaded, questions)
+            print(f"  Mismatch accuracy: {mismatch_acc*100:.1f}%  "
+                  f"delta_vs_matched={mismatch_acc - matched_acc:+.3f}")
+        else:
+            mismatch_acc = None
+            mismatch_hits = []
+            print(f"[Exp 5 / {domain_name}] MISMATCHED profile not found — skipped")
+
+        reset_alpha_profile(loaded.model)
+        check_ram(8.0, f"exp5-{domain_name}-end")
+
+        results[domain_name] = {
+            "n_questions":   len(questions),
+            "default_acc":   default_acc,
+            "matched_acc":   matched_acc,
+            "mismatch_acc":  mismatch_acc,
+            "matched_delta": matched_acc - default_acc,
+        }
+
+    reset_alpha_profile(loaded.model)
+
+    # Success: matched > default on at least 2 of 3 domains
+    wins = sum(
+        1 for d in ["medical", "coding", "legal"]
+        if results.get(d, {}).get("matched_delta", -1) > 0
+    )
+    success = wins >= 2
+
+    print(f"\n=== Exp 5 Summary ===")
+    print(f"{'Domain':<10} {'Default':>8} {'Matched':>8} {'Mismatch':>10} {'Delta':>8}")
+    for domain_name in ["medical", "coding", "legal"]:
+        r = results.get(domain_name, {})
+        if "error" in r:
+            print(f"  {domain_name:<8}  ERROR: {r['error']}")
+            continue
+        mis = f"{r['mismatch_acc']*100:.1f}%" if r["mismatch_acc"] is not None else "  n/a"
+        print(f"  {domain_name:<8}  {r['default_acc']*100:6.1f}%  "
+              f"{r['matched_acc']*100:6.1f}%  {mis:>8}  "
+              f"{r['matched_delta']:+.3f}")
+    print(f"Matched beats default in {wins}/3 domains — success={success}")
+
+    results["wins"] = wins
+    results["success"] = success
+    check_ram(8.0, "exp5-end")
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Experiment 6: Profile persistence across new prompts
+# ---------------------------------------------------------------------------
+
+def run_experiment_6(
+    loaded,
+    output_dir: str = ".",
+    *,
+    profile_dir: Optional[str] = None,
+    n_questions: int = 5,
+) -> Dict[str, Any]:
+    """
+    Experiment 6: Does the medical profile generalise to NEW questions?
+
+    Tests whether a profile trained on one paragraph of medical text
+    transfers to medical MCQs it has never seen, and whether it avoids
+    hurting performance on general knowledge.
+    """
+    from .profiles import load_alpha_profile, reset_alpha_profile
+
+    check_ram(8.0, "exp6-start")
+    out_path = Path(output_dir)
+    profile_base = Path(profile_dir) if profile_dir else out_path
+    medical_path = str(profile_base / "medical_profile.json")
+
+    if not Path(medical_path).exists():
+        return {"error": f"Missing profile: {medical_path}", "success": False}
+
+    med_new_qs  = _MCQ_MEDICAL_NEW[:n_questions]
+    general_qs  = _MCQ_GENERAL[:n_questions]
+
+    # ── Default — new medical questions ───────────────────────────────────
+    reset_alpha_profile(loaded.model)
+    print(f"\n[Exp 6] Scoring {len(med_new_qs)} NEW medical questions — DEFAULT …",
+          flush=True)
+    med_default_acc, _ = _eval_questions(loaded, med_new_qs)
+    print(f"  New medical default: {med_default_acc*100:.1f}%")
+
+    # ── Medical profile — new medical questions ────────────────────────────
+    load_alpha_profile(loaded.model, medical_path)
+    print(f"[Exp 6] Scoring new medical questions — MEDICAL profile …", flush=True)
+    med_profile_acc, _ = _eval_questions(loaded, med_new_qs)
+    print(f"  New medical (medical profile): {med_profile_acc*100:.1f}%  "
+          f"delta={med_profile_acc - med_default_acc:+.3f}")
+
+    # ── Default — general knowledge ────────────────────────────────────────
+    reset_alpha_profile(loaded.model)
+    print(f"[Exp 6] Scoring {len(general_qs)} general knowledge questions — DEFAULT …",
+          flush=True)
+    gen_default_acc, _ = _eval_questions(loaded, general_qs)
+    print(f"  General default: {gen_default_acc*100:.1f}%")
+
+    # ── Medical profile — general knowledge ───────────────────────────────
+    load_alpha_profile(loaded.model, medical_path)
+    print(f"[Exp 6] Scoring general questions — MEDICAL profile …", flush=True)
+    gen_profile_acc, _ = _eval_questions(loaded, general_qs)
+    print(f"  General (medical profile): {gen_profile_acc*100:.1f}%  "
+          f"delta={gen_profile_acc - gen_default_acc:+.3f}")
+
+    reset_alpha_profile(loaded.model)
+
+    med_delta = med_profile_acc - med_default_acc
+    gen_delta  = gen_profile_acc - gen_default_acc
+
+    # Success: profile helps on new medical AND doesn't degrade general by >2%
+    success = (med_delta > 0) and (gen_delta > -0.02)
+
+    print(f"\n=== Exp 6 Summary ===")
+    print(f"  New medical: default={med_default_acc*100:.1f}%  "
+          f"medical_profile={med_profile_acc*100:.1f}%  delta={med_delta:+.3f}")
+    print(f"  General:     default={gen_default_acc*100:.1f}%  "
+          f"medical_profile={gen_profile_acc*100:.1f}%  delta={gen_delta:+.3f}")
+    print(f"  success={success}  (needs med_delta>0 and gen_delta>-2%)")
+
+    check_ram(8.0, "exp6-end")
+    return {
+        "med_default_acc":  med_default_acc,
+        "med_profile_acc":  med_profile_acc,
+        "med_delta":        med_delta,
+        "gen_default_acc":  gen_default_acc,
+        "gen_profile_acc":  gen_profile_acc,
+        "gen_delta":        gen_delta,
+        "success":          success,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Experiment 7: Cumulative TTT — does more training produce better profiles?
+# ---------------------------------------------------------------------------
+
+def run_experiment_7(
+    loaded,
+    output_dir: str = ".",
+    *,
+    n_questions: int = 5,
+    token_budgets: Optional[List[int]] = None,
+    ttt_chunk_size: int = 128,
+) -> Dict[str, Any]:
+    """
+    Experiment 7: Cumulative TTT quality curve.
+
+    Runs TTT on medical text for increasing token budgets (each starting
+    from the default alpha state), saves each profile, then evaluates on
+    the Exp 5 medical MCQs.
+
+    token_budgets: list of token counts to train on (default [200, 500, 1000]).
+    ttt_chunk_size: chunk_size passed to ttt_on_tokens (default 128).
+      Use 2 to force single-token forward passes via the batched GEMM path.
+
+    IMPORTANT: Alphas are reset to default BEFORE each TTT run.
+    """
+    from .profiles import save_alpha_profile, reset_alpha_profile
+
+    check_ram(8.0, "exp7-start")
+    out_path = Path(output_dir)
+
+    model = loaded.model
+    moe_layers = _get_moe_layers(model)
+    if not moe_layers:
+        return {"error": "No MoE layers found", "success": False}
+    n_experts = moe_layers[0][1].n_experts
+
+    # Use caller-supplied budgets/chunk_size, falling back to fast single-token
+    # defaults.  chunk_size=2 → each TTT chunk is seq_len=1 (batched GEMM path).
+    _resolved_budgets: List[int] = token_budgets if token_budgets is not None else [8, 16, 32]
+    _resolved_chunk: int = ttt_chunk_size if ttt_chunk_size != 128 else 2
+
+    # Build a long medical corpus large enough for the largest budget
+    _max_budget = max(_resolved_budgets) if _resolved_budgets else 32
+    repeats = max(6, (_max_budget // max(len(_MEDICAL_TEXT.split()), 1)) + 2)
+    long_medical = (_MEDICAL_TEXT + " ") * repeats
+    all_medical_ids = _tokenize(loaded, long_medical)
+    if len(all_medical_ids) < 2:
+        return {"error": f"Too few tokens after tokenisation: {len(all_medical_ids)}", "success": False}
+
+    # Snapshot initial alpha state so we can reset between runs
+    initial_alpha_state = collect_alpha_state(model)
+
+    # Clamp to what we actually have
+    token_budgets = [b for b in _resolved_budgets if b <= len(all_medical_ids)]
+    ttt_chunk_size = _resolved_chunk
+    print(f"\n[Exp 7] Token budgets: {token_budgets}  chunk_size={ttt_chunk_size}  "
+          f"(corpus length: {len(all_medical_ids)} tokens)",
+          flush=True)
+
+    ttt_results: Dict[str, Any] = {}
+
+    for budget in token_budgets:
+        label = f"medical_{budget}"
+        check_ram(8.0, f"exp7-{budget}-start")
+
+        # Reset to default alphas
+        for layer_idx, mlp in moe_layers:
+            for e in range(n_experts):
+                mlp.alphas[e] = initial_alpha_state[layer_idx].get(e, mlp.alpha_default)
+
+        ids_slice = all_medical_ids[:budget]
+        alpha_params, moe_layers_patched = setup_alpha_params(model)
+        t0 = time.perf_counter()
+        loss = ttt_on_tokens(loaded, ids_slice, alpha_params, lr=0.1, chunk_size=ttt_chunk_size)
+        elapsed = time.perf_counter() - t0
+        teardown_alpha_params(moe_layers_patched, alpha_params)
+        del alpha_params
+
+        gc.collect()
+        if torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+
+        profile_path = str(out_path / f"{label}_profile.json")
+        save_alpha_profile(model, profile_path, label=label)
+        print(f"[Exp 7 / {budget} tokens] loss={loss:.4f}  elapsed={elapsed:.1f}s  "
+              f"saved: {profile_path}", flush=True)
+
+        # Evaluate on medical MCQs
+        med_eval_qs = _MCQ_MEDICAL[:n_questions]
+        print(f"[Exp 7 / {budget} tokens] Evaluating on {len(med_eval_qs)} medical MCQs …",
+              flush=True)
+        acc, _ = _eval_questions(loaded, med_eval_qs)
+        print(f"  Medical accuracy: {acc*100:.1f}%")
+
+        ttt_results[str(budget)] = {
+            "token_budget": budget,
+            "ttt_loss":     loss,
+            "elapsed_s":    elapsed,
+            "medical_acc":  acc,
+        }
+
+        check_ram(8.0, f"exp7-{budget}-end")
+
+    # Restore initial alphas
+    for layer_idx, mlp in moe_layers:
+        for e in range(n_experts):
+            mlp.alphas[e] = initial_alpha_state[layer_idx].get(e, mlp.alpha_default)
+
+    accs = [ttt_results[str(b)]["medical_acc"] for b in token_budgets if str(b) in ttt_results]
+    max_acc = max(accs) if accs else 0.0
+
+    # Also get default accuracy for comparison
+    med_eval_qs = _MCQ_MEDICAL[:n_questions]
+    print(f"\n[Exp 7] Scoring medical MCQs under DEFAULT (post-restore) alphas …", flush=True)
+    default_acc, _ = _eval_questions(loaded, med_eval_qs)
+    ttt_results["default_acc"] = default_acc
+
+    # Success: max accuracy across budgets beats default
+    success = max_acc > default_acc
+
+    print(f"\n=== Exp 7 Summary ===")
+    print(f"  Default accuracy: {default_acc*100:.1f}%")
+    for b in token_budgets:
+        r = ttt_results.get(str(b), {})
+        print(f"  {b:4d} tokens: acc={r.get('medical_acc', 0)*100:.1f}%  "
+              f"loss={r.get('ttt_loss', 0):.4f}  t={r.get('elapsed_s', 0):.1f}s")
+    print(f"  success={success}  (any budget > default {default_acc*100:.1f}%)")
+
+    check_ram(8.0, "exp7-end")
+    ttt_results["success"] = success
+    ttt_results["max_acc"] = max_acc
+    return ttt_results
 
 
 # ---------------------------------------------------------------------------

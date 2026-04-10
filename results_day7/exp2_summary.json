@@ -1,0 +1,20 @@
+{
+  "medical": {
+    "prompt": "Explain the treatment options for hypertension in elderly patients.",
+    "response": "00000000000000000000000000000000000000000000000000",
+    "switch_ms": 0.33237499883398414
+  },
+  "coding": {
+    "prompt": "Write a Python function to find the longest common subsequence.",
+    "response": "00000000000000000000000000000000000000000000000000",
+    "switch_ms": 0.23883300309535116
+  },
+  "legal": {
+    "prompt": "Draft an indemnification clause for a software license agreement.",
+    "response": "\n\n\n\n0000000000000000000000000000000000000000000000",
+    "switch_ms": 0.20700000459328294
+  },
+  "mean_switch_ms": 0.25940266884087276,
+  "max_switch_ms": 0.33237499883398414,
+  "success": true
+}

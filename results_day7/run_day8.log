@@ -1,0 +1,79 @@
+[START] Free RAM: 54.0 GB
+
+============================================================
+Loading Outlier-10B-v3 (paged, bf16, max_experts_in_memory=64)
+============================================================
+You are using a model of type `outlier_moe` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+Load time: 12.5s   Free RAM: 33.4 GB
+[RAM [post-load]] Free: 33.4 GB
+
+============================================================
+Pre-warm: single forward pass (loads experts + compiles Metal shaders)
+============================================================
+Pre-warm done in 18.4s   Free RAM: 27.3 GB
+[RAM [post-warmup]] Free: 25.4 GB
+
+============================================================
+MCQ pre-warm: forward pass at seq_len=256 (compile MCQ kernels)
+============================================================
+MCQ pre-warm done in 47.4s   Free RAM: 23.8 GB
+[RAM [post-mcq-warmup]] Free: 23.8 GB
+
+[SKIP] Exp 3 already complete: /Users/matthewkerr/outlier-engine/results_day7/exp3_summary.json
+
+[SKIP] Exp 4 already complete: /Users/matthewkerr/outlier-engine/results_day7/exp4_summary.json
+
+[SKIP] Exp 5 already complete: /Users/matthewkerr/outlier-engine/results_day7/exp5_summary.json
+
+[SKIP] Exp 6 already complete: /Users/matthewkerr/outlier-engine/results_day7/exp6_summary.json
+
+============================================================
+EXPERIMENT 7: Cumulative TTT quality curve
+============================================================
+[RAM [exp7-start]] Free: 23.8 GB
+
+[Exp 7] Token budgets: [8, 16, 32]  chunk_size=2  (corpus length: 1404 tokens)
+[RAM [exp7-8-start]] Free: 23.8 GB
+[Exp 7 / 8 tokens] loss=8.5335  elapsed=151.3s  saved: /Users/matthewkerr/outlier-engine/results_day7/medical_8_profile.json
+[Exp 7 / 8 tokens] Evaluating on 1 medical MCQs …
+  Medical accuracy: 0.0%
+[RAM [exp7-8-end]] Free: 24.5 GB
+[RAM [exp7-16-start]] Free: 24.5 GB
+[Exp 7 / 16 tokens] loss=7.9958  elapsed=50.3s  saved: /Users/matthewkerr/outlier-engine/results_day7/medical_16_profile.json
+[Exp 7 / 16 tokens] Evaluating on 1 medical MCQs …
+  Medical accuracy: 0.0%
+[RAM [exp7-16-end]] Free: 27.0 GB
+[RAM [exp7-32-start]] Free: 27.0 GB
+[Exp 7 / 32 tokens] loss=8.7384  elapsed=101.6s  saved: /Users/matthewkerr/outlier-engine/results_day7/medical_32_profile.json
+[Exp 7 / 32 tokens] Evaluating on 1 medical MCQs …
+  Medical accuracy: 0.0%
+[RAM [exp7-32-end]] Free: 24.5 GB
+
+[Exp 7] Scoring medical MCQs under DEFAULT (post-restore) alphas …
+
+=== Exp 7 Summary ===
+  Default accuracy: 0.0%
+     8 tokens: acc=0.0%  loss=8.5335  t=151.3s
+    16 tokens: acc=0.0%  loss=7.9958  t=50.3s
+    32 tokens: acc=0.0%  loss=8.7384  t=101.6s
+  success=False  (any budget > default 0.0%)
+[RAM [exp7-end]] Free: 25.8 GB
+Saved: /Users/matthewkerr/outlier-engine/results_day7/exp7_summary.json
+
+============================================================
+MASTER RESULTS TABLE — ALL 7 EXPERIMENTS
+============================================================
+Final free RAM: 25.8 GB
+
+  Exp 1 (Alpha TTT):       success=True  distinct=93
+  Exp 2 (Profile switch):  success=True  max_switch=0.332ms
+  Exp 3 (RoE):             success=False  roe4_win=0.0%  roe6_win=0.0%
+  Exp 4 (Predictor):       success=True  mean_acc=0.997
+  Exp 5 (Quality):         success=False  wins=0/3
+    medical : default=0.0%  matched=0.0%  delta=+0.000
+    coding  : default=0.0%  matched=0.0%  delta=+0.000
+    legal   : default=0.0%  matched=0.0%  delta=+0.000
+  Exp 6 (Persistence):     success=False  med_delta=+0.000  gen_delta=+0.000
+  Exp 7 (Cumulative TTT):  success=False  max_acc=0.0%  default=0.0%
+
+All results saved to /Users/matthewkerr/outlier-engine/results_day7

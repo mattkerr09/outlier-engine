@@ -1,0 +1,23 @@
+{
+  "8": {
+    "token_budget": 8,
+    "ttt_loss": 8.533482142857142,
+    "elapsed_s": 151.28654545900645,
+    "medical_acc": 0.0
+  },
+  "16": {
+    "token_budget": 16,
+    "ttt_loss": 7.995833333333334,
+    "elapsed_s": 50.31724637499428,
+    "medical_acc": 0.0
+  },
+  "32": {
+    "token_budget": 32,
+    "ttt_loss": 8.738407258064516,
+    "elapsed_s": 101.63512879199698,
+    "medical_acc": 0.0
+  },
+  "default_acc": 0.0,
+  "success": false,
+  "max_acc": 0.0
+}

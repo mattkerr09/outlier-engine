@@ -86,7 +86,10 @@ def load_alpha_profile(model, path: str) -> float:
         layer_data = data[key]
         for expert_idx_str, alpha_val in layer_data.items():
             expert_idx = int(expert_idx_str)
-            layer.mlp.alphas[expert_idx] = float(alpha_val)
+            # Clamp to a safe range: Sprint-001 profiles were saved without the
+            # [0, 1] clamp that ttt_on_tokens now enforces, so values up to
+            # 28.0 have been observed — these cause MPS overflow during GEMM.
+            layer.mlp.alphas[expert_idx] = max(0.0, min(float(alpha_val), 2.0))
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
     return elapsed_ms
 

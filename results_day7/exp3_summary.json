@@ -1,0 +1,75 @@
+{
+  "rows": [
+    {
+      "config": "top2",
+      "prompt": "Explain the process of photosynthesis.",
+      "rep": 0,
+      "perplexity": 0.71875
+    },
+    {
+      "config": "top2",
+      "prompt": "What are the main differences between Py",
+      "rep": 0,
+      "perplexity": 0.5703125
+    },
+    {
+      "config": "top2",
+      "prompt": "Describe the causes of World War I.",
+      "rep": 0,
+      "perplexity": 2.390625
+    },
+    {
+      "config": "roe4",
+      "prompt": "Explain the process of photosynthesis.",
+      "rep": 0,
+      "perplexity": 0.71875
+    },
+    {
+      "config": "roe4",
+      "prompt": "What are the main differences between Py",
+      "rep": 0,
+      "perplexity": 0.5703125
+    },
+    {
+      "config": "roe4",
+      "prompt": "Describe the causes of World War I.",
+      "rep": 0,
+      "perplexity": 2.390625
+    },
+    {
+      "config": "roe6",
+      "prompt": "Explain the process of photosynthesis.",
+      "rep": 0,
+      "perplexity": 0.71875
+    },
+    {
+      "config": "roe6",
+      "prompt": "What are the main differences between Py",
+      "rep": 0,
+      "perplexity": 0.5703125
+    },
+    {
+      "config": "roe6",
+      "prompt": "Describe the causes of World War I.",
+      "rep": 0,
+      "perplexity": 2.390625
+    }
+  ],
+  "summary": {
+    "top2": {
+      "mean_perplexity": 1.2265625,
+      "n": 3
+    },
+    "roe4": {
+      "mean_perplexity": 1.2265625,
+      "n": 3
+    },
+    "roe6": {
+      "mean_perplexity": 1.2265625,
+      "n": 3
+    }
+  },
+  "roe4_win_rate": 0.0,
+  "roe6_win_rate": 0.0,
+  "success": false
+}

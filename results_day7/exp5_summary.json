@@ -1,0 +1,25 @@
+{
+  "medical": {
+    "n_questions": 1,
+    "default_acc": 0.0,
+    "matched_acc": 0.0,
+    "mismatch_acc": 0.0,
+    "matched_delta": 0.0
+  },
+  "coding": {
+    "n_questions": 1,
+    "default_acc": 0.0,
+    "matched_acc": 0.0,
+    "mismatch_acc": 0.0,
+    "matched_delta": 0.0
+  },
+  "legal": {
+    "n_questions": 1,
+    "default_acc": 0.0,
+    "matched_acc": 0.0,
+    "mismatch_acc": 0.0,
+    "matched_delta": 0.0
+  },
+  "wins": 0,
+  "success": false
+}

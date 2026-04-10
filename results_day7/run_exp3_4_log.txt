@@ -1,0 +1,12 @@
+[START] Free RAM: 59.3 GB
+You are using a model of type `outlier_moe` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+Load time: 12.5s   Free RAM: 37.1 GB
+[RAM [post-load]] Free: 37.1 GB
+
+============================================================
+EXPERIMENT 3: RoE ensemble quality comparison
+============================================================
+[RAM [exp3-start]] Free: 37.1 GB
+
+[Exp 3] Config: top2 (roe_k=0)
+[RAM [exp3-top2]] Free: 37.1 GB

@@ -1,0 +1,9 @@
+{
+  "med_default_acc": 0.0,
+  "med_profile_acc": 0.0,
+  "med_delta": 0.0,
+  "gen_default_acc": 1.0,
+  "gen_profile_acc": 1.0,
+  "gen_delta": 0.0,
+  "success": false
+}

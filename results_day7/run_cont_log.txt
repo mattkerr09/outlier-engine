@@ -1,0 +1,39 @@
+[START] Free RAM: 60.9 GB
+Exp 1 profiles found.
+You are using a model of type `outlier_moe` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+Load time: 12.3s   Free RAM after load: 38.0 GB
+[RAM [post-load]] Free: 38.0 GB
+
+============================================================
+EXPERIMENT 2: Profile switching speed + domain generation
+============================================================
+[RAM [exp2-start]] Free: 38.0 GB
+
+[Exp 2 / medical] switch=0.332ms
+  Prompt:   Explain the treatment options for hypertension in elderly patients.
+  Response: 00000000000000000000000000000000000000000000000000
+
+[Exp 2 / coding] switch=0.239ms
+  Prompt:   Write a Python function to find the longest common subsequence.
+  Response: 00000000000000000000000000000000000000000000000000
+
+[Exp 2 / legal] switch=0.207ms
+  Prompt:   Draft an indemnification clause for a software license agreement.
+  Response: 
+
+
+
+0000000000000000000000000000000000000000000000
+
+[Exp 2] Mean switch time: 0.259 ms  Max: 0.332 ms
+Saved: /Users/matthewkerr/outlier-engine/results_day7/profile_switch_results.json
+[RAM [exp2-end]] Free: 22.2 GB
+Saved: /Users/matthewkerr/outlier-engine/results_day7/exp2_summary.json
+
+============================================================
+EXPERIMENT 3: RoE ensemble quality comparison
+============================================================
+[RAM [exp3-start]] Free: 22.2 GB
+
+[Exp 3] Config: top2 (roe_k=0)
+[RAM [exp3-top2]] Free: 22.2 GB
