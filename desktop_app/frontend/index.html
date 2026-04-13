@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Outlier Desktop v0.2</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0a0a0a;color:#e0e0e0;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+header{background:#1a1a1a;border-bottom:1px solid #333;padding:12px 20px;display:flex;align-items:center;justify-content:space-between}
+.logo{font-size:18px;font-weight:600;color:#ff6b35}
+.version{color:#666;font-size:11px;margin-left:8px}
+.header-right{display:flex;align-items:center;gap:12px}
+.model-status{display:flex;align-items:center;gap:6px;font-size:12px;color:#888}
+.status-dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.status-dot.loading{background:#ffd43b;animation:pulse 1.2s ease-in-out infinite}
+.status-dot.ready{background:#51cf66}
+.status-dot.stub{background:#888}
+.status-dot.error{background:#ff6b6b}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
+.profile-select{background:#2a2a2a;color:#e0e0e0;border:1px solid #444;border-radius:6px;padding:6px 12px;font-size:13px;cursor:pointer}
+.main{flex:1;display:flex;overflow:hidden}
+.sidebar{width:220px;background:#111;border-right:1px solid #333;padding:16px;overflow-y:auto}
+.sidebar h3{font-size:11px;text-transform:uppercase;color:#666;margin-bottom:8px;letter-spacing:1px}
+.sidebar-item{padding:8px 10px;border-radius:6px;margin-bottom:4px;cursor:pointer;font-size:13px;color:#aaa}
+.sidebar-item:hover{background:#1f1f1f;color:#fff}
+.sidebar-item.active{background:#2a1a0a;color:#ff6b35}
+.chat-area{flex:1;display:flex;flex-direction:column}
+.messages{flex:1;padding:20px;overflow-y:auto}
+.msg{max-width:700px;margin:0 auto 16px;padding:14px 18px;border-radius:10px;line-height:1.5;font-size:14px}
+.msg.user{background:#1a1a2e}
+.msg.bot{background:#16213e;white-space:pre-wrap}
+.msg-meta{font-size:10px;color:#555;margin-bottom:4px;text-transform:uppercase;letter-spacing:1px}
+.input-area{border-top:1px solid #333;padding:16px 20px;background:#1a1a1a}
+.input-wrap{max-width:700px;margin:0 auto;display:flex;gap:8px}
+#input{flex:1;background:#2a2a2a;color:#fff;border:1px solid #444;border-radius:8px;padding:12px 14px;font-size:14px;font-family:inherit;resize:none;min-height:44px;max-height:120px}
+#input:focus{outline:none;border-color:#ff6b35}
+#send{background:#ff6b35;color:#000;border:none;border-radius:8px;padding:0 20px;font-weight:600;cursor:pointer;font-size:14px}
+#send:hover{background:#ff8855}
+#send:disabled{background:#555;cursor:not-allowed}
+.status-bar{background:#0a0a0a;border-top:1px solid #333;padding:6px 20px;font-size:11px;color:#555;display:flex;justify-content:space-between}
+pre{background:#0a0a0a;padding:12px;border-radius:6px;overflow-x:auto;margin:8px 0;font-size:13px}
+</style>
+</head>
+<body>
+<header>
+<div><span class="logo">Outlier</span><span class="version" id="ver-label">v0.2.0</span></div>
+<div class="header-right">
+<div class="model-status" id="model-status">
+    <span class="status-dot stub" id="status-dot"></span>
+    <span id="status-text">Connecting...</span>
+</div>
+<select class="profile-select" id="profile">
+<option value="default">Default</option>
+<option value="medical">Medical</option>
+<option value="coding">Coding</option>
+<option value="legal">Legal</option>
+</select>
+</div>
+</header>
+<div class="main">
+<aside class="sidebar">
+<h3>Conversations</h3>
+<div class="sidebar-item active">New chat</div>
+<h3 style="margin-top:20px">Profiles</h3>
+<div class="sidebar-item">Default</div>
+<div class="sidebar-item">Medical</div>
+<div class="sidebar-item">Coding</div>
+<div class="sidebar-item">Legal</div>
+<h3 style="margin-top:20px">About</h3>
+<div class="sidebar-item" onclick="alert('Outlier v0.2 — Desktop inference mode')">Settings</div>
+</aside>
+<div class="chat-area">
+<div class="messages" id="messages">
+<div class="msg bot">
+<div class="msg-meta">Outlier</div>
+Welcome to Outlier Desktop v0.2. The backend will load the model in the background &mdash; watch the status indicator in the header for "Ready".<br><br>
+You can chat in stub mode while the model loads. Once ready, responses come from real inference.
+</div>
+</div>
+<div class="input-area">
+<div class="input-wrap">
+<textarea id="input" placeholder="Ask Outlier anything..." rows="1"></textarea>
+<button id="send" onclick="sendMessage()">Send</button>
+</div>
+</div>
+</div>
+</div>
+<div class="status-bar">
+<span id="status">connecting...</span>
+<span id="model-info">Outlier Desktop v0.2</span>
+</div>
+<script>
+const messages = document.getElementById('messages');
+const input = document.getElementById('input');
+const send = document.getElementById('send');
+const profile = document.getElementById('profile');
+const statusBar = document.getElementById('status');
+const modelInfo = document.getElementById('model-info');
+const statusDot = document.getElementById('status-dot');
+const statusText = document.getElementById('status-text');
+
+// --- Health polling ---
+let currentMode = 'unknown';
+let healthPollId = null;
+
+async function pollHealth() {
+    try {
+        const res = await fetch('/api/health');
+        const h = await res.json();
+        currentMode = h.mode;
+
+        // Update header status indicator
+        statusDot.className = 'status-dot';
+        if (h.mode === 'inference' && h.model_loaded) {
+            statusDot.classList.add('ready');
+            statusText.textContent = 'Ready';
+            statusBar.textContent = 'inference mode';
+        } else if (h.mode === 'loading') {
+            statusDot.classList.add('loading');
+            statusText.textContent = 'Loading model...';
+            statusBar.textContent = 'loading model...';
+        } else if (h.mode === 'stub') {
+            statusDot.classList.add('stub');
+            statusText.textContent = 'Stub mode';
+            statusBar.textContent = 'stub mode';
+        }
+        if (h.error) {
+            statusDot.className = 'status-dot error';
+            statusText.textContent = 'Load error';
+            statusBar.textContent = 'model load error: ' + h.error;
+        }
+
+        modelInfo.textContent = h.model + ' \u00b7 ' + h.mode;
+
+        // Stop polling once model is loaded or in stub mode
+        if ((h.model_loaded || h.mode === 'stub') && healthPollId) {
+            clearInterval(healthPollId);
+            healthPollId = null;
+        }
+    } catch (e) {
+        statusDot.className = 'status-dot error';
+        statusText.textContent = 'Disconnected';
+        statusBar.textContent = 'backend unreachable';
+    }
+}
+
+// Poll every 2s while model is loading
+healthPollId = setInterval(pollHealth, 2000);
+pollHealth();
+
+// --- Input handling ---
+input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+});
+input.addEventListener('input', () => {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+});
+
+// --- Send message & stream response ---
+async function sendMessage() {
+    const text = input.value.trim();
+    if (!text) return;
+
+    // Render user message
+    const userDiv = document.createElement('div');
+    userDiv.className = 'msg user';
+    userDiv.innerHTML = '<div class="msg-meta">You</div>' + text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    messages.appendChild(userDiv);
+    input.value = '';
+    input.style.height = 'auto';
+    send.disabled = true;
+
+    // Render bot placeholder
+    const botDiv = document.createElement('div');
+    botDiv.className = 'msg bot';
+    const modeLabel = currentMode === 'inference' ? 'inference' : 'stub';
+    botDiv.innerHTML = '<div class="msg-meta">Outlier \u00b7 ' + profile.value + ' \u00b7 ' + modeLabel + '</div><span class="stream"></span>';
+    messages.appendChild(botDiv);
+    const streamSpan = botDiv.querySelector('.stream');
+    messages.scrollTop = messages.scrollHeight;
+
+    // Timing for tok/s
+    const streamStart = performance.now();
+    let byteCount = 0;
+
+    try {
+        const res = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                message: text,
+                profile: profile.value,
+                max_tokens: 512,
+                temperature: 0.7
+            })
+        });
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let fullText = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value);
+            fullText += chunk;
+            byteCount += value.byteLength;
+
+            // Display text, excluding the META footer if present
+            const metaIdx = fullText.indexOf('\n\x00META:');
+            if (metaIdx >= 0) {
+                streamSpan.textContent = fullText.substring(0, metaIdx);
+            } else {
+                streamSpan.textContent = fullText;
+            }
+            messages.scrollTop = messages.scrollHeight;
+        }
+
+        // Parse metadata footer if present (real inference mode)
+        const metaIdx = fullText.indexOf('\n\x00META:');
+        if (metaIdx >= 0) {
+            try {
+                const meta = JSON.parse(fullText.substring(metaIdx + 6));
+                statusBar.textContent = meta.tok_per_s.toFixed(1) + ' tok/s \u00b7 ' + meta.tok_count + ' tokens \u00b7 ' + meta.elapsed_s.toFixed(2) + 's';
+            } catch (_) {}
+        } else {
+            // Stub mode: estimate tok/s from word count
+            const elapsed = (performance.now() - streamStart) / 1000;
+            const wordCount = fullText.trim().split(/\s+/).length;
+            const estimatedTps = wordCount / elapsed;
+            statusBar.textContent = estimatedTps.toFixed(1) + ' tok/s (stub) \u00b7 ' + wordCount + ' words \u00b7 ' + elapsed.toFixed(2) + 's';
+        }
+    } catch (e) {
+        streamSpan.textContent = 'Error: ' + e.message;
+    }
+    send.disabled = false;
+    input.focus();
+}
+
+// --- Profile switching ---
+profile.addEventListener('change', () => {
+    statusBar.textContent = 'switched to ' + profile.value + ' profile';
+    setTimeout(() => {
+        pollHealth();
+    }, 1500);
+});
+
+input.focus();
+</script>
+</body>
+</html>
