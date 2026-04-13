@@ -102,6 +102,10 @@ def _normalize_config(raw: Dict[str, Any]) -> Dict[str, Any]:
         cfg["n_experts"] = cfg["outlier_num_experts"]
     if "outlier_num_experts_per_tok" in cfg and "top_k" not in cfg:
         cfg["top_k"] = cfg["outlier_num_experts_per_tok"]
+    # V3.2+ publishes on HF with standard qwen2 model_type but IS an MoE model.
+    # Detect via n_experts and promote to outlier_moe so the paged TQ1_0 path activates.
+    if cfg.get("model_type") in ("qwen2", "qwen2_moe") and cfg.get("n_experts", 0) > 0:
+        cfg["model_type"] = "outlier_moe"
     return cfg
 
 

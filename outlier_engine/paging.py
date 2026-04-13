@@ -1449,7 +1449,11 @@ class ExpertPageManager:
         self._pinned: frozenset = frozenset()
         self._tensor_shard_index: Dict[str, str] = {}
         self._packed_index: Dict[str, Dict[str, object]] = {}
-        self._packed_experts_dir = Path(packed_experts_dir).expanduser() if packed_experts_dir else None
+        if packed_experts_dir:
+            self._packed_experts_dir: Path | None = Path(packed_experts_dir).expanduser()
+        else:
+            _default = _default_packed_dir()
+            self._packed_experts_dir = _default if (_default / "index.json").exists() else None
         self._monolith_loader: MonolithExpertLoader | None = None
         self._monolith_path: Path | None = None
         self._fmt = "toy"
@@ -2088,7 +2092,11 @@ class OutlierPagedModel(nn.Module):
         # Tensor-level shard index: raw_tensor_key → shard_path
         self._tensor_shard_index: Dict[str, str] = {}
         self._packed_index: Dict[str, Dict[str, object]] = {}
-        self._packed_experts_dir = Path(packed_experts_dir).expanduser() if packed_experts_dir else None
+        if packed_experts_dir:
+            self._packed_experts_dir: Path | None = Path(packed_experts_dir).expanduser()
+        else:
+            _default = _default_packed_dir()
+            self._packed_experts_dir = _default if (_default / "index.json").exists() else None
 
         # Format detected during shard scan
         self._fmt: str = "toy"
