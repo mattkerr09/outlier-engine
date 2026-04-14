@@ -1275,6 +1275,13 @@ class _HybridPagedMLP(nn.Module):
         self.page_manager = page_manager
         self.alphas = {int(expert_idx): float(alpha) for expert_idx, alpha in (alphas or {}).items()}
         self.alpha_default = float(alpha_default)
+        # Register alphas as nn.Parameters so they're visible to named_parameters()
+        # and optimizable by TTT experiments.
+        for expert_idx, alpha_val in self.alphas.items():
+            self.register_parameter(
+                f"alpha_e{expert_idx}",
+                nn.Parameter(torch.tensor(alpha_val), requires_grad=True),
+            )
         self.router_weight = nn.Parameter(
             torch.empty(n_experts, hidden_dim), requires_grad=False
         )
@@ -1345,11 +1352,10 @@ class _HybridPagedMLP(nn.Module):
                     (selected_w[0] * (selected_idx[0] == eid).to(selected_w.dtype)).sum()
                     for eid in used_expert_ids
                 ]).to(dtype=batched_out.dtype, device=batched_out.device)  # [E]
-            alpha_vec = torch.tensor(
-                [self.alphas.get(int(eid), self.alpha_default) for eid in used_expert_ids],
-                dtype=batched_out.dtype,
-                device=batched_out.device,
-            )
+            alpha_vec = torch.stack([
+                getattr(self, f"alpha_e{int(eid)}", None) or torch.tensor(self.alpha_default)
+                for eid in used_expert_ids
+            ]).to(dtype=batched_out.dtype, device=batched_out.device)
             expert_out[0] = (batched_out * (w_vec * alpha_vec).unsqueeze(-1)).sum(dim=0)  # [H]
             return (shared_out + expert_out).to(x.dtype).view(batch, seq_len, hidden_dim)
 
@@ -1362,7 +1368,9 @@ class _HybridPagedMLP(nn.Module):
             weights = (selected_w * assignment.to(selected_w.dtype)).sum(dim=-1, keepdim=True)
             expert = self.page_manager.get_expert(self.layer_idx, int(expert_idx))
             out = _run_expert(x_flat[token_mask], expert).to(shared_out.dtype)
-            out = out * self.alphas.get(int(expert_idx), self.alpha_default)
+            alpha_param = getattr(self, f"alpha_e{int(expert_idx)}", None)
+            alpha_val = alpha_param if alpha_param is not None else self.alpha_default
+            out = out * alpha_val
             expert_out[token_mask] += weights[token_mask] * out
 
         return (shared_out + expert_out).to(x.dtype).view(batch, seq_len, hidden_dim)
