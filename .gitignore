@@ -15,3 +15,5 @@ packed_experts/
 checkpoints/**/*.safetensors
 checkpoints/**/*.pt
 data/distillation/training_log.jsonl
+desktop_app/dist/
+desktop_app/pyinstaller_build/
