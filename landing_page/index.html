@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Outlier — The smartest local AI that learns you</title>
+<meta name="description" content="150B-parameter AI running locally on your Mac in under 25 GB. Private, fast, and it learns your style.">
+<meta property="og:title" content="Outlier — Local AI that learns you">
+<meta property="og:description" content="150B-parameter MoE model running privately on consumer hardware. No cloud. No data leaves your machine.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://outlier.host">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Outlier — Local AI that learns you">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x1F9E0;</text></svg>">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>tailwind.config={theme:{extend:{colors:{brand:'#ff6b35',dark:'#0a0a0a',card:'#141414',border:'#222'}}}}</script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+body{font-family:'Inter',system-ui,sans-serif}
+.gradient-text{background:linear-gradient(135deg,#ff6b35 0%,#ff8f65 50%,#ffd700 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.glow{box-shadow:0 0 60px rgba(255,107,53,0.15)}
+</style>
+</head>
+<body class="bg-dark text-gray-200 antialiased">
+
+<!-- Nav -->
+<nav class="fixed top-0 w-full z-50 bg-dark/80 backdrop-blur-lg border-b border-border">
+<div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+  <div class="flex items-center gap-2">
+    <span class="text-2xl font-bold text-brand">Outlier</span>
+    <span class="text-xs text-gray-500 mt-1">v1.0</span>
+  </div>
+  <div class="hidden md:flex items-center gap-8 text-sm text-gray-400">
+    <a href="#features" class="hover:text-white transition">Features</a>
+    <a href="#pricing" class="hover:text-white transition">Pricing</a>
+    <a href="#compare" class="hover:text-white transition">Compare</a>
+    <a href="https://github.com/Outlier-host/outlier-engine" class="hover:text-white transition">GitHub</a>
+  </div>
+  <a href="#waitlist" class="bg-brand text-black px-4 py-2 rounded-lg text-sm font-semibold hover:bg-orange-400 transition">Get Early Access</a>
+</div>
+</nav>
+
+<!-- Hero -->
+<section class="pt-32 pb-20 px-6">
+<div class="max-w-4xl mx-auto text-center">
+  <div class="inline-block px-4 py-1.5 rounded-full border border-brand/30 bg-brand/5 text-brand text-sm font-medium mb-6">
+    Now in beta &mdash; 150B parameters on your Mac
+  </div>
+  <h1 class="text-5xl md:text-7xl font-extrabold leading-tight mb-6">
+    The smartest local AI<br>
+    <span class="gradient-text">that learns you</span>
+  </h1>
+  <p class="text-xl text-gray-400 max-w-2xl mx-auto mb-10 leading-relaxed">
+    Outlier runs a 150B-parameter mixture-of-experts model in under 25 GB on your Mac.
+    Private by default. No cloud required. And it adapts to how you think.
+  </p>
+  <div class="flex flex-col sm:flex-row gap-4 justify-center">
+    <a href="#waitlist" class="bg-brand text-black px-8 py-3.5 rounded-xl font-semibold text-lg hover:bg-orange-400 transition glow">
+      Join the Waitlist
+    </a>
+    <a href="https://github.com/Outlier-host/outlier-engine" class="border border-gray-700 text-gray-300 px-8 py-3.5 rounded-xl font-semibold text-lg hover:border-gray-500 hover:text-white transition">
+      View Source
+    </a>
+  </div>
+  <p class="text-sm text-gray-500 mt-4">Open-source engine. 3 patents filed. Zero data leaves your machine.</p>
+</div>
+</section>
+
+<!-- Demo placeholder -->
+<section class="pb-20 px-6">
+<div class="max-w-4xl mx-auto">
+  <div class="bg-card border border-border rounded-2xl overflow-hidden glow">
+    <div class="bg-[#1a1a1a] px-4 py-2.5 flex items-center gap-2 border-b border-border">
+      <div class="w-3 h-3 rounded-full bg-red-500"></div>
+      <div class="w-3 h-3 rounded-full bg-yellow-500"></div>
+      <div class="w-3 h-3 rounded-full bg-green-500"></div>
+      <span class="text-xs text-gray-500 ml-2">Outlier Desktop</span>
+    </div>
+    <div class="p-8 text-center text-gray-500">
+      <div class="text-6xl mb-4">&#x1F4BB;</div>
+      <p class="text-lg font-medium text-gray-300 mb-2">Demo video coming soon</p>
+      <p class="text-sm">Real-time inference on Apple Silicon &mdash; no internet required</p>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- Features -->
+<section id="features" class="py-20 px-6">
+<div class="max-w-6xl mx-auto">
+  <h2 class="text-3xl font-bold text-center mb-4">Four things that matter</h2>
+  <p class="text-gray-400 text-center mb-12 max-w-xl mx-auto">Every other AI tool makes you choose between smart and private. Outlier gives you both.</p>
+  <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
+    <div class="bg-card border border-border rounded-xl p-6">
+      <div class="text-3xl mb-3">&#x1F9E0;</div>
+      <h3 class="text-lg font-semibold mb-2">Smart</h3>
+      <p class="text-sm text-gray-400">76-83% MMLU across 4 scales. Mixture-of-experts architecture activates specialized knowledge per query.</p>
+      <p class="text-xs text-brand mt-3">Verified: lm_eval, 5-shot, 4 model scales</p>
+    </div>
+    <div class="bg-card border border-border rounded-xl p-6">
+      <div class="text-3xl mb-3">&#x1F512;</div>
+      <h3 class="text-lg font-semibold mb-2">Private</h3>
+      <p class="text-sm text-gray-400">Runs entirely on your Mac. No API calls, no telemetry, no cloud. Your conversations never leave your machine.</p>
+      <p class="text-xs text-brand mt-3">Zero network calls during inference</p>
+    </div>
+    <div class="bg-card border border-border rounded-xl p-6">
+      <div class="text-3xl mb-3">&#x1F393;</div>
+      <h3 class="text-lg font-semibold mb-2">Learns You</h3>
+      <p class="text-sm text-gray-400">Domain profiles adapt expert routing to your field. Medical, legal, coding &mdash; each profile tunes 224 parameters to your work.</p>
+      <p class="text-xs text-brand mt-3">Profile switching: &lt;1ms latency</p>
+    </div>
+    <div class="bg-card border border-border rounded-xl p-6">
+      <div class="text-3xl mb-3">&#x267E;&#xFE0F;</div>
+      <h3 class="text-lg font-semibold mb-2">Yours Forever</h3>
+      <p class="text-sm text-gray-400">Open-source engine, exportable profiles, no subscription lock-in. Your data and your model stay yours.</p>
+      <p class="text-xs text-brand mt-3">GDPR export + full data portability</p>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- Numbers -->
+<section class="py-16 px-6 border-y border-border">
+<div class="max-w-4xl mx-auto grid grid-cols-2 md:grid-cols-4 gap-8 text-center">
+  <div>
+    <div class="text-4xl font-bold text-brand">150B</div>
+    <div class="text-sm text-gray-400 mt-1">Parameters</div>
+  </div>
+  <div>
+    <div class="text-4xl font-bold text-brand">&lt;25 GB</div>
+    <div class="text-sm text-gray-400 mt-1">RAM Usage</div>
+  </div>
+  <div>
+    <div class="text-4xl font-bold text-brand">83.2%</div>
+    <div class="text-sm text-gray-400 mt-1">MMLU (150B)</div>
+  </div>
+  <div>
+    <div class="text-4xl font-bold text-brand">$0</div>
+    <div class="text-sm text-gray-400 mt-1">Per Token</div>
+  </div>
+</div>
+</section>
+
+<!-- Pricing -->
+<section id="pricing" class="py-20 px-6">
+<div class="max-w-5xl mx-auto">
+  <h2 class="text-3xl font-bold text-center mb-4">Simple pricing</h2>
+  <p class="text-gray-400 text-center mb-12">Open source forever. Pro unlocks profiles and priority support.</p>
+  <div class="grid md:grid-cols-3 gap-6">
+    <div class="bg-card border border-border rounded-xl p-8">
+      <h3 class="text-lg font-semibold mb-1">Community</h3>
+      <div class="text-3xl font-bold mb-1">Free</div>
+      <p class="text-sm text-gray-400 mb-6">Forever</p>
+      <ul class="text-sm text-gray-400 space-y-2 mb-8">
+        <li>&#x2713; Full 10B model inference</li>
+        <li>&#x2713; Open-source engine</li>
+        <li>&#x2713; Default profile</li>
+        <li>&#x2713; Community support</li>
+      </ul>
+      <a href="https://github.com/Outlier-host/outlier-engine" class="block text-center border border-gray-700 text-gray-300 px-6 py-2.5 rounded-lg text-sm font-medium hover:border-gray-500 transition">Get Started</a>
+    </div>
+    <div class="bg-card border-2 border-brand rounded-xl p-8 relative">
+      <div class="absolute -top-3 left-1/2 -translate-x-1/2 bg-brand text-black text-xs font-bold px-3 py-1 rounded-full">RECOMMENDED</div>
+      <h3 class="text-lg font-semibold mb-1">Pro</h3>
+      <div class="text-3xl font-bold mb-1">$19.99<span class="text-lg font-normal text-gray-400">/mo</span></div>
+      <p class="text-sm text-gray-400 mb-6">For professionals</p>
+      <ul class="text-sm text-gray-400 space-y-2 mb-8">
+        <li>&#x2713; Everything in Community</li>
+        <li>&#x2713; Custom domain profiles</li>
+        <li>&#x2713; Profile import/export</li>
+        <li>&#x2713; Priority email support</li>
+        <li>&#x2713; Early access to new models</li>
+      </ul>
+      <a href="#waitlist" class="block text-center bg-brand text-black px-6 py-2.5 rounded-lg text-sm font-semibold hover:bg-orange-400 transition">Join Waitlist</a>
+    </div>
+    <div class="bg-card border border-border rounded-xl p-8">
+      <h3 class="text-lg font-semibold mb-1">Enterprise</h3>
+      <div class="text-3xl font-bold mb-1">Custom</div>
+      <p class="text-sm text-gray-400 mb-6">For teams</p>
+      <ul class="text-sm text-gray-400 space-y-2 mb-8">
+        <li>&#x2713; Everything in Pro</li>
+        <li>&#x2713; Team profile sharing</li>
+        <li>&#x2713; On-prem deployment support</li>
+        <li>&#x2713; Custom model training</li>
+        <li>&#x2713; SLA + dedicated support</li>
+      </ul>
+      <a href="mailto:matt@outlier.host" class="block text-center border border-gray-700 text-gray-300 px-6 py-2.5 rounded-lg text-sm font-medium hover:border-gray-500 transition">Contact Us</a>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- Comparison -->
+<section id="compare" class="py-20 px-6">
+<div class="max-w-5xl mx-auto">
+  <h2 class="text-3xl font-bold text-center mb-4">How Outlier compares</h2>
+  <p class="text-gray-400 text-center mb-12">The only local AI with frontier-scale parameters and adaptive profiles.</p>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="border-b border-border text-left">
+          <th class="py-3 px-4 text-gray-400 font-medium"></th>
+          <th class="py-3 px-4 text-brand font-semibold">Outlier</th>
+          <th class="py-3 px-4 text-gray-400 font-medium">Ollama</th>
+          <th class="py-3 px-4 text-gray-400 font-medium">Apple Intelligence</th>
+          <th class="py-3 px-4 text-gray-400 font-medium">ChatGPT</th>
+        </tr>
+      </thead>
+      <tbody class="text-gray-400">
+        <tr class="border-b border-border/50">
+          <td class="py-3 px-4 font-medium text-gray-300">Runs locally</td>
+          <td class="py-3 px-4 text-green-400">Yes</td>
+          <td class="py-3 px-4 text-green-400">Yes</td>
+          <td class="py-3 px-4 text-yellow-400">Partial</td>
+          <td class="py-3 px-4 text-red-400">No</td>
+        </tr>
+        <tr class="border-b border-border/50">
+          <td class="py-3 px-4 font-medium text-gray-300">Max parameters</td>
+          <td class="py-3 px-4 text-brand font-semibold">150B MoE</td>
+          <td class="py-3 px-4">70B dense</td>
+          <td class="py-3 px-4">~3B</td>
+          <td class="py-3 px-4">Cloud (unknown)</td>
+        </tr>
+        <tr class="border-b border-border/50">
+          <td class="py-3 px-4 font-medium text-gray-300">MMLU score</td>
+          <td class="py-3 px-4 text-brand font-semibold">83.2%</td>
+          <td class="py-3 px-4">Varies by model</td>
+          <td class="py-3 px-4">~50%</td>
+          <td class="py-3 px-4">~87%</td>
+        </tr>
+        <tr class="border-b border-border/50">
+          <td class="py-3 px-4 font-medium text-gray-300">Learns your style</td>
+          <td class="py-3 px-4 text-green-400">Yes (profiles)</td>
+          <td class="py-3 px-4 text-red-400">No</td>
+          <td class="py-3 px-4 text-red-400">No</td>
+          <td class="py-3 px-4 text-yellow-400">Memories</td>
+        </tr>
+        <tr class="border-b border-border/50">
+          <td class="py-3 px-4 font-medium text-gray-300">Data privacy</td>
+          <td class="py-3 px-4 text-green-400">100% local</td>
+          <td class="py-3 px-4 text-green-400">100% local</td>
+          <td class="py-3 px-4 text-yellow-400">Apple servers</td>
+          <td class="py-3 px-4 text-red-400">OpenAI servers</td>
+        </tr>
+        <tr class="border-b border-border/50">
+          <td class="py-3 px-4 font-medium text-gray-300">Open source</td>
+          <td class="py-3 px-4 text-green-400">Yes</td>
+          <td class="py-3 px-4 text-green-400">Yes</td>
+          <td class="py-3 px-4 text-red-400">No</td>
+          <td class="py-3 px-4 text-red-400">No</td>
+        </tr>
+        <tr>
+          <td class="py-3 px-4 font-medium text-gray-300">Cost per token</td>
+          <td class="py-3 px-4 text-brand font-semibold">$0</td>
+          <td class="py-3 px-4">$0</td>
+          <td class="py-3 px-4">$0</td>
+          <td class="py-3 px-4">$0.002</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+</section>
+
+<!-- Waitlist -->
+<section id="waitlist" class="py-20 px-6">
+<div class="max-w-xl mx-auto text-center">
+  <h2 class="text-3xl font-bold mb-4">Get early access</h2>
+  <p class="text-gray-400 mb-8">Join the waitlist for Outlier Desktop. We'll notify you when v1.0 ships.</p>
+  <form class="flex gap-3" action="https://app.posthog.com/e/" method="POST" onsubmit="return handleWaitlist(event)">
+    <input type="email" id="waitlist-email" placeholder="you@example.com" required
+      class="flex-1 bg-card border border-border rounded-lg px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-brand">
+    <button type="submit" class="bg-brand text-black px-6 py-3 rounded-lg font-semibold hover:bg-orange-400 transition whitespace-nowrap">
+      Join Waitlist
+    </button>
+  </form>
+  <p id="waitlist-msg" class="text-sm text-gray-500 mt-3"></p>
+</div>
+</section>
+
+<!-- Footer -->
+<footer class="border-t border-border py-12 px-6">
+<div class="max-w-6xl mx-auto flex flex-col md:flex-row justify-between items-center gap-6">
+  <div>
+    <span class="text-lg font-bold text-brand">Outlier</span>
+    <span class="text-sm text-gray-500 ml-2">&copy; 2026 Kerr & Company LLC</span>
+  </div>
+  <div class="flex gap-6 text-sm text-gray-400">
+    <a href="https://github.com/Outlier-host/outlier-engine" class="hover:text-white transition">GitHub</a>
+    <a href="https://huggingface.co/Outlier-Ai" class="hover:text-white transition">HuggingFace</a>
+    <a href="mailto:matt@outlier.host" class="hover:text-white transition">Contact</a>
+    <a href="#" class="hover:text-white transition">Privacy</a>
+    <a href="#" class="hover:text-white transition">Terms</a>
+  </div>
+</div>
+</footer>
+
+<script>
+function handleWaitlist(e){
+  e.preventDefault();
+  const email=document.getElementById('waitlist-email').value;
+  const msg=document.getElementById('waitlist-msg');
+  // Store locally for now — PostHog capture when integrated
+  const waitlist=JSON.parse(localStorage.getItem('outlier_waitlist')||'[]');
+  waitlist.push({email,ts:new Date().toISOString()});
+  localStorage.setItem('outlier_waitlist',JSON.stringify(waitlist));
+  msg.textContent="You're on the list! We'll email you when Outlier Desktop v1.0 ships.";
+  msg.classList.remove('text-gray-500');
+  msg.classList.add('text-green-400');
+  document.getElementById('waitlist-email').value='';
+  return false;
+}
+// Smooth scroll
+document.querySelectorAll('a[href^="#"]').forEach(a=>{
+  a.addEventListener('click',e=>{
+    e.preventDefault();
+    const t=document.querySelector(a.getAttribute('href'));
+    if(t)t.scrollIntoView({behavior:'smooth'});
+  });
+});
+</script>
+</body>
+</html>
