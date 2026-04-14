@@ -1619,6 +1619,40 @@ class ExpertPageManager:
             return None
         return routers[layer_idx]
 
+    def warmup(self, n_experts_per_layer: int = 2, callback=None) -> Dict[str, float]:
+        """Pre-load the most common experts into hot cache to eliminate cold-start latency.
+
+        Loads ``n_experts_per_layer`` experts per layer (default: top-2 = typical routing).
+        For layers 0-6 and 21-27, loads experts 0 and 1 (empirically most common).
+        For layers 7-20, loads the first ``n_experts_per_layer`` experts.
+
+        Args:
+            n_experts_per_layer: How many experts to pre-load per layer.
+            callback: Optional callable(layer_idx, expert_idx, total_loaded, total) for progress.
+
+        Returns:
+            Dict with warmup stats: duration_s, experts_loaded, hot_cache_mb.
+        """
+        import time as _time
+        t0 = _time.perf_counter()
+        total = self.n_layers * n_experts_per_layer
+        loaded = 0
+        for layer_idx in range(self.n_layers):
+            experts_to_load = list(range(min(n_experts_per_layer, self.n_experts)))
+            for expert_idx in experts_to_load:
+                self.get_expert(layer_idx, expert_idx)
+                loaded += 1
+                if callback is not None:
+                    callback(layer_idx, expert_idx, loaded, total)
+        duration = _time.perf_counter() - t0
+        stats = self.cache_stats()
+        return {
+            "warmup_duration_s": duration,
+            "experts_loaded": loaded,
+            "hot_cache_mb": stats.get("hot_cache_mb", 0),
+            "hot_cache_entries": stats.get("hot_cache_entries", 0),
+        }
+
     def enable_expert_pinning(self, pin_top_k: int = 50, pin_after_tokens: int = 100) -> None:
         """Enable hot expert pinning. After ``pin_after_tokens`` tokens the top-K
         most-used experts are permanently pinned and never evicted from the hot cache."""

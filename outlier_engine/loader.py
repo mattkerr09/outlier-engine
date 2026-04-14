@@ -204,6 +204,7 @@ def load_model(
     packed_experts_dir: Optional[str] = None,
     monolith_path: Optional[str] = None,
     roe_top_k: Optional[int] = None,
+    warmup: bool = False,
 ) -> LoadedOutlier:
     use_alias = not _is_local_path(model_ref)
     resolved_ref = _canonical_model_ref(model_ref) if use_alias else model_ref
@@ -315,6 +316,18 @@ def load_model(
             effective_roe_top_k = int(env_roe)
     if effective_roe_top_k is not None and effective_roe_top_k > 2 and paged and hasattr(model, "enable_roe"):
         model.enable_roe(effective_roe_top_k)
+
+    # Warmup: pre-load experts into hot cache to eliminate cold-start latency
+    if warmup and paged:
+        pm = getattr(model, "outlier_page_manager", None)
+        if pm is not None:
+            warmup_stats = pm.warmup(n_experts_per_layer=2)
+            _profile_log = getattr(pm, "_debug_log", lambda m: None)
+            _profile_log(
+                f"warmup complete: {warmup_stats['experts_loaded']} experts in "
+                f"{warmup_stats['warmup_duration_s']:.1f}s, "
+                f"hot_cache={warmup_stats['hot_cache_mb']:.0f} MB"
+            )
 
     return LoadedOutlier(
         model_ref=resolved_ref,
