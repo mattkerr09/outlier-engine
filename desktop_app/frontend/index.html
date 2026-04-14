@@ -1,252 +1,527 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<title>Outlier Desktop v0.2</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0a0a0a;color:#e0e0e0;height:100vh;display:flex;flex-direction:column;overflow:hidden}
-header{background:#1a1a1a;border-bottom:1px solid #333;padding:12px 20px;display:flex;align-items:center;justify-content:space-between}
-.logo{font-size:18px;font-weight:600;color:#ff6b35}
-.version{color:#666;font-size:11px;margin-left:8px}
-.header-right{display:flex;align-items:center;gap:12px}
-.model-status{display:flex;align-items:center;gap:6px;font-size:12px;color:#888}
-.status-dot{width:8px;height:8px;border-radius:50%;display:inline-block}
-.status-dot.loading{background:#ffd43b;animation:pulse 1.2s ease-in-out infinite}
-.status-dot.ready{background:#51cf66}
-.status-dot.stub{background:#888}
-.status-dot.error{background:#ff6b6b}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
-.profile-select{background:#2a2a2a;color:#e0e0e0;border:1px solid #444;border-radius:6px;padding:6px 12px;font-size:13px;cursor:pointer}
-.main{flex:1;display:flex;overflow:hidden}
-.sidebar{width:220px;background:#111;border-right:1px solid #333;padding:16px;overflow-y:auto}
-.sidebar h3{font-size:11px;text-transform:uppercase;color:#666;margin-bottom:8px;letter-spacing:1px}
-.sidebar-item{padding:8px 10px;border-radius:6px;margin-bottom:4px;cursor:pointer;font-size:13px;color:#aaa}
-.sidebar-item:hover{background:#1f1f1f;color:#fff}
-.sidebar-item.active{background:#2a1a0a;color:#ff6b35}
-.chat-area{flex:1;display:flex;flex-direction:column}
-.messages{flex:1;padding:20px;overflow-y:auto}
-.msg{max-width:700px;margin:0 auto 16px;padding:14px 18px;border-radius:10px;line-height:1.5;font-size:14px}
-.msg.user{background:#1a1a2e}
-.msg.bot{background:#16213e;white-space:pre-wrap}
-.msg-meta{font-size:10px;color:#555;margin-bottom:4px;text-transform:uppercase;letter-spacing:1px}
-.input-area{border-top:1px solid #333;padding:16px 20px;background:#1a1a1a}
-.input-wrap{max-width:700px;margin:0 auto;display:flex;gap:8px}
-#input{flex:1;background:#2a2a2a;color:#fff;border:1px solid #444;border-radius:8px;padding:12px 14px;font-size:14px;font-family:inherit;resize:none;min-height:44px;max-height:120px}
-#input:focus{outline:none;border-color:#ff6b35}
-#send{background:#ff6b35;color:#000;border:none;border-radius:8px;padding:0 20px;font-weight:600;cursor:pointer;font-size:14px}
-#send:hover{background:#ff8855}
-#send:disabled{background:#555;cursor:not-allowed}
-.status-bar{background:#0a0a0a;border-top:1px solid #333;padding:6px 20px;font-size:11px;color:#555;display:flex;justify-content:space-between}
-pre{background:#0a0a0a;padding:12px;border-radius:6px;overflow-x:auto;margin:8px 0;font-size:13px}
-</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Outlier Chat</title>
+
+    <!-- Marked - lightweight markdown parser -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- highlight.js - syntax highlighting for code blocks -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+
+    <style>
+        /* -- Reset & Base ---------------------------------------- */
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg:       #0a0a0a;
+            --bg-chat:  #111111;
+            --bg-user:  #1a1a2e;
+            --bg-bot:   #141414;
+            --text:     #e0e0e0;
+            --text-dim: #888888;
+            --accent:   #ff6b35;
+            --border:   #2a2a2a;
+            --code-bg:  #0d1117;
+            --radius:   8px;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* -- Header --------------------------------------------- */
+        .header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 16px 24px;
+            border-bottom: 1px solid var(--border);
+            background: var(--bg);
+        }
+        .header .logo {
+            width: 32px; height: 32px;
+            background: var(--accent);
+            border-radius: 6px;
+            display: flex; align-items: center; justify-content: center;
+            font-weight: 700; font-size: 16px; color: #fff;
+        }
+        .header h1 { font-size: 18px; font-weight: 600; }
+        .header .model-badge {
+            font-size: 11px;
+            background: rgba(255,107,53,0.15);
+            color: var(--accent);
+            padding: 2px 8px;
+            border-radius: 10px;
+            margin-left: auto;
+        }
+
+        /* -- Chat Area ------------------------------------------ */
+        #chat {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .message {
+            max-width: 780px;
+            width: 100%;
+            margin: 0 auto;
+            padding: 16px 20px;
+            border-radius: var(--radius);
+            line-height: 1.6;
+            animation: fadeIn 0.2s ease;
+        }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+        .message.user {
+            background: var(--bg-user);
+            border: 1px solid #2a2a4a;
+        }
+        .message.bot {
+            background: var(--bg-bot);
+            border: 1px solid var(--border);
+        }
+
+        .message-label {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 8px;
+        }
+        .message.user .message-label { color: #7b8cde; }
+        .message.bot .message-label  { color: var(--accent); }
+
+        /* -- Typing Indicator ----------------------------------- */
+        .typing-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            max-width: 780px;
+            width: 100%;
+            margin: 0 auto;
+            padding: 12px 20px;
+            color: var(--text-dim);
+            font-size: 13px;
+            animation: fadeIn 0.2s ease;
+        }
+        .typing-indicator .dots {
+            display: flex; gap: 4px;
+        }
+        .typing-indicator .dots span {
+            width: 6px; height: 6px;
+            background: var(--accent);
+            border-radius: 50%;
+            animation: bounce 1.4s infinite ease-in-out both;
+        }
+        .typing-indicator .dots span:nth-child(1) { animation-delay: -0.32s; }
+        .typing-indicator .dots span:nth-child(2) { animation-delay: -0.16s; }
+        .typing-indicator .dots span:nth-child(3) { animation-delay: 0s; }
+        @keyframes bounce {
+            0%, 80%, 100% { transform: scale(0); }
+            40% { transform: scale(1); }
+        }
+
+        /* -- Markdown Content Styles ---------------------------- */
+        .message-content h1, .message-content h2, .message-content h3,
+        .message-content h4, .message-content h5, .message-content h6 {
+            color: #ffffff;
+            margin: 16px 0 8px 0;
+            line-height: 1.3;
+        }
+        .message-content h1 { font-size: 1.5em; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+        .message-content h2 { font-size: 1.3em; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+        .message-content h3 { font-size: 1.15em; }
+        .message-content h4 { font-size: 1.05em; }
+
+        .message-content p { margin: 8px 0; }
+
+        .message-content strong { color: #ffffff; font-weight: 600; }
+        .message-content em { font-style: italic; color: #cccccc; }
+
+        .message-content ul, .message-content ol {
+            margin: 8px 0;
+            padding-left: 24px;
+        }
+        .message-content li { margin: 4px 0; }
+        .message-content li::marker { color: var(--accent); }
+
+        .message-content blockquote {
+            border-left: 3px solid var(--accent);
+            background: rgba(255,107,53,0.05);
+            padding: 10px 16px;
+            margin: 12px 0;
+            border-radius: 0 var(--radius) var(--radius) 0;
+            color: #cccccc;
+        }
+
+        .message-content table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 12px 0;
+            font-size: 14px;
+        }
+        .message-content th {
+            background: rgba(255,107,53,0.1);
+            color: var(--accent);
+            text-align: left;
+            padding: 8px 12px;
+            border-bottom: 2px solid var(--border);
+            font-weight: 600;
+        }
+        .message-content td {
+            padding: 8px 12px;
+            border-bottom: 1px solid var(--border);
+        }
+        .message-content tr:hover td { background: rgba(255,255,255,0.02); }
+
+        .message-content a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+        .message-content a:hover { text-decoration: underline; }
+
+        .message-content hr {
+            border: none;
+            border-top: 1px solid var(--border);
+            margin: 16px 0;
+        }
+
+        /* -- Inline Code ---------------------------------------- */
+        .message-content code:not(pre code) {
+            background: var(--code-bg);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.9em;
+            color: #e06c75;
+            font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+        }
+
+        /* -- Code Blocks with Copy Button ----------------------- */
+        .code-block-wrapper {
+            position: relative;
+            margin: 12px 0;
+            border-radius: var(--radius);
+            overflow: hidden;
+            border: 1px solid var(--border);
+        }
+        .code-block-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 6px 12px;
+            background: #1a1a1a;
+            border-bottom: 1px solid var(--border);
+            font-size: 12px;
+            color: var(--text-dim);
+        }
+        .code-block-header .lang-label {
+            font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+            text-transform: lowercase;
+        }
+        .copy-btn {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-dim);
+            padding: 3px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 11px;
+            font-family: inherit;
+            transition: all 0.15s ease;
+            opacity: 0;
+        }
+        .code-block-wrapper:hover .copy-btn { opacity: 1; }
+        .copy-btn:hover {
+            color: var(--accent);
+            border-color: var(--accent);
+        }
+        .copy-btn.copied {
+            color: #4caf50;
+            border-color: #4caf50;
+            opacity: 1;
+        }
+
+        .code-block-wrapper pre {
+            margin: 0;
+            padding: 16px;
+            background: var(--code-bg);
+            overflow-x: auto;
+        }
+        .code-block-wrapper pre code {
+            font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        /* -- Input Area ----------------------------------------- */
+        .input-area {
+            padding: 16px 24px 24px;
+            border-top: 1px solid var(--border);
+            background: var(--bg);
+        }
+        .input-row {
+            max-width: 780px;
+            margin: 0 auto;
+            display: flex;
+            gap: 10px;
+        }
+        #prompt {
+            flex: 1;
+            background: var(--bg-chat);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 12px 16px;
+            color: var(--text);
+            font-size: 15px;
+            font-family: inherit;
+            resize: none;
+            outline: none;
+            transition: border-color 0.15s;
+            min-height: 48px;
+            max-height: 200px;
+        }
+        #prompt:focus { border-color: var(--accent); }
+        #prompt::placeholder { color: var(--text-dim); }
+
+        #send-btn {
+            background: var(--accent);
+            color: #fff;
+            border: none;
+            border-radius: var(--radius);
+            padding: 0 20px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.15s;
+            white-space: nowrap;
+        }
+        #send-btn:hover { opacity: 0.85; }
+        #send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        /* -- Scrollbar ------------------------------------------ */
+        #chat::-webkit-scrollbar { width: 6px; }
+        #chat::-webkit-scrollbar-track { background: transparent; }
+        #chat::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+        #chat::-webkit-scrollbar-thumb:hover { background: #444; }
+    </style>
 </head>
 <body>
-<header>
-<div><span class="logo">Outlier</span><span class="version" id="ver-label">v0.2.0</span></div>
-<div class="header-right">
-<div class="model-status" id="model-status">
-    <span class="status-dot stub" id="status-dot"></span>
-    <span id="status-text">Connecting...</span>
+
+<div class="header">
+    <div class="logo">O</div>
+    <h1>Outlier Chat</h1>
+    <span class="model-badge">outlier-10b-v2</span>
 </div>
-<select class="profile-select" id="profile">
-<option value="default">Default</option>
-<option value="medical">Medical</option>
-<option value="coding">Coding</option>
-<option value="legal">Legal</option>
-</select>
-</div>
-</header>
-<div class="main">
-<aside class="sidebar">
-<h3>Conversations</h3>
-<div class="sidebar-item active">New chat</div>
-<h3 style="margin-top:20px">Profiles</h3>
-<div class="sidebar-item">Default</div>
-<div class="sidebar-item">Medical</div>
-<div class="sidebar-item">Coding</div>
-<div class="sidebar-item">Legal</div>
-<h3 style="margin-top:20px">About</h3>
-<div class="sidebar-item" onclick="alert('Outlier v0.2 — Desktop inference mode')">Settings</div>
-</aside>
-<div class="chat-area">
-<div class="messages" id="messages">
-<div class="msg bot">
-<div class="msg-meta">Outlier</div>
-Welcome to Outlier Desktop v0.2. The backend will load the model in the background &mdash; watch the status indicator in the header for "Ready".<br><br>
-You can chat in stub mode while the model loads. Once ready, responses come from real inference.
-</div>
-</div>
+
+<div id="chat"></div>
+
 <div class="input-area">
-<div class="input-wrap">
-<textarea id="input" placeholder="Ask Outlier anything..." rows="1"></textarea>
-<button id="send" onclick="sendMessage()">Send</button>
+    <div class="input-row">
+        <textarea id="prompt" rows="1" placeholder="Ask Outlier anything..." autofocus></textarea>
+        <button id="send-btn">Send</button>
+    </div>
 </div>
-</div>
-</div>
-</div>
-<div class="status-bar">
-<span id="status">connecting...</span>
-<span id="model-info">Outlier Desktop v0.2</span>
-</div>
+
 <script>
-const messages = document.getElementById('messages');
-const input = document.getElementById('input');
-const send = document.getElementById('send');
-const profile = document.getElementById('profile');
-const statusBar = document.getElementById('status');
-const modelInfo = document.getElementById('model-info');
-const statusDot = document.getElementById('status-dot');
-const statusText = document.getElementById('status-text');
+(function () {
+    "use strict";
 
-// --- Health polling ---
-let currentMode = 'unknown';
-let healthPollId = null;
+    // -- Configure marked ----------------------------------------
+    var renderer = new marked.Renderer();
 
-async function pollHealth() {
-    try {
-        const res = await fetch('/api/health');
-        const h = await res.json();
-        currentMode = h.mode;
-
-        // Update header status indicator
-        statusDot.className = 'status-dot';
-        if (h.mode === 'inference' && h.model_loaded) {
-            statusDot.classList.add('ready');
-            statusText.textContent = 'Ready';
-            statusBar.textContent = 'inference mode';
-        } else if (h.mode === 'loading') {
-            statusDot.classList.add('loading');
-            statusText.textContent = 'Loading model...';
-            statusBar.textContent = 'loading model...';
-        } else if (h.mode === 'stub') {
-            statusDot.classList.add('stub');
-            statusText.textContent = 'Stub mode';
-            statusBar.textContent = 'stub mode';
-        }
-        if (h.error) {
-            statusDot.className = 'status-dot error';
-            statusText.textContent = 'Load error';
-            statusBar.textContent = 'model load error: ' + h.error;
-        }
-
-        modelInfo.textContent = h.model + ' \u00b7 ' + h.mode;
-
-        // Stop polling once model is loaded or in stub mode
-        if ((h.model_loaded || h.mode === 'stub') && healthPollId) {
-            clearInterval(healthPollId);
-            healthPollId = null;
-        }
-    } catch (e) {
-        statusDot.className = 'status-dot error';
-        statusText.textContent = 'Disconnected';
-        statusBar.textContent = 'backend unreachable';
-    }
-}
-
-// Poll every 2s while model is loading
-healthPollId = setInterval(pollHealth, 2000);
-pollHealth();
-
-// --- Input handling ---
-input.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
-});
-input.addEventListener('input', () => {
-    input.style.height = 'auto';
-    input.style.height = Math.min(input.scrollHeight, 120) + 'px';
-});
-
-// --- Send message & stream response ---
-async function sendMessage() {
-    const text = input.value.trim();
-    if (!text) return;
-
-    // Render user message
-    const userDiv = document.createElement('div');
-    userDiv.className = 'msg user';
-    userDiv.innerHTML = '<div class="msg-meta">You</div>' + text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    messages.appendChild(userDiv);
-    input.value = '';
-    input.style.height = 'auto';
-    send.disabled = true;
-
-    // Render bot placeholder
-    const botDiv = document.createElement('div');
-    botDiv.className = 'msg bot';
-    const modeLabel = currentMode === 'inference' ? 'inference' : 'stub';
-    botDiv.innerHTML = '<div class="msg-meta">Outlier \u00b7 ' + profile.value + ' \u00b7 ' + modeLabel + '</div><span class="stream"></span>';
-    messages.appendChild(botDiv);
-    const streamSpan = botDiv.querySelector('.stream');
-    messages.scrollTop = messages.scrollHeight;
-
-    // Timing for tok/s
-    const streamStart = performance.now();
-    let byteCount = 0;
-
-    try {
-        const res = await fetch('/api/chat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                message: text,
-                profile: profile.value,
-                max_tokens: 512,
-                temperature: 0.7
-            })
-        });
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let fullText = '';
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            const chunk = decoder.decode(value);
-            fullText += chunk;
-            byteCount += value.byteLength;
-
-            // Display text, excluding the META footer if present
-            const metaIdx = fullText.indexOf('\n\x00META:');
-            if (metaIdx >= 0) {
-                streamSpan.textContent = fullText.substring(0, metaIdx);
-            } else {
-                streamSpan.textContent = fullText;
-            }
-            messages.scrollTop = messages.scrollHeight;
-        }
-
-        // Parse metadata footer if present (real inference mode)
-        const metaIdx = fullText.indexOf('\n\x00META:');
-        if (metaIdx >= 0) {
-            try {
-                const meta = JSON.parse(fullText.substring(metaIdx + 6));
-                statusBar.textContent = meta.tok_per_s.toFixed(1) + ' tok/s \u00b7 ' + meta.tok_count + ' tokens \u00b7 ' + meta.elapsed_s.toFixed(2) + 's';
-            } catch (_) {}
+    // Custom code block renderer: wraps in .code-block-wrapper with header + copy button
+    renderer.code = function (code, language) {
+        // marked v12+ passes an object; older versions pass (code, lang, escaped)
+        var text, lang;
+        if (typeof code === "object" && code !== null) {
+            text = code.text || "";
+            lang = code.lang || "";
         } else {
-            // Stub mode: estimate tok/s from word count
-            const elapsed = (performance.now() - streamStart) / 1000;
-            const wordCount = fullText.trim().split(/\s+/).length;
-            const estimatedTps = wordCount / elapsed;
-            statusBar.textContent = estimatedTps.toFixed(1) + ' tok/s (stub) \u00b7 ' + wordCount + ' words \u00b7 ' + elapsed.toFixed(2) + 's';
+            text = code || "";
+            lang = language || "";
         }
-    } catch (e) {
-        streamSpan.textContent = 'Error: ' + e.message;
+        var langLabel = lang ? lang : "code";
+        var highlighted;
+        if (lang && hljs.getLanguage(lang)) {
+            highlighted = hljs.highlight(text, { language: lang }).value;
+        } else {
+            highlighted = hljs.highlightAuto(text).value;
+        }
+        return (
+            '<div class="code-block-wrapper">' +
+                '<div class="code-block-header">' +
+                    '<span class="lang-label">' + langLabel + '</span>' +
+                    '<button class="copy-btn" onclick="copyCode(this)">Copy</button>' +
+                '</div>' +
+                '<pre><code class="hljs">' + highlighted + '</code></pre>' +
+            '</div>'
+        );
+    };
+
+    marked.setOptions({
+        renderer: renderer,
+        gfm: true,
+        breaks: true,
+        smartypants: false
+    });
+
+    // -- DOM references ------------------------------------------
+    var chat    = document.getElementById("chat");
+    var prompt  = document.getElementById("prompt");
+    var sendBtn = document.getElementById("send-btn");
+
+    var isStreaming = false;
+
+    // -- Copy code to clipboard ----------------------------------
+    window.copyCode = function (btn) {
+        var wrapper = btn.closest(".code-block-wrapper");
+        var codeEl  = wrapper.querySelector("pre code");
+        var text    = codeEl.textContent;
+        navigator.clipboard.writeText(text).then(function () {
+            btn.textContent = "Copied!";
+            btn.classList.add("copied");
+            setTimeout(function () {
+                btn.textContent = "Copy";
+                btn.classList.remove("copied");
+            }, 2000);
+        });
+    };
+
+    // -- Auto-resize textarea ------------------------------------
+    prompt.addEventListener("input", function () {
+        this.style.height = "auto";
+        this.style.height = Math.min(this.scrollHeight, 200) + "px";
+    });
+
+    // -- Create a message element --------------------------------
+    function createMessage(role) {
+        var msg = document.createElement("div");
+        msg.className = "message " + role;
+
+        var label = document.createElement("div");
+        label.className = "message-label";
+        label.textContent = role === "user" ? "You" : "Outlier";
+        msg.appendChild(label);
+
+        var content = document.createElement("div");
+        content.className = "message-content";
+        msg.appendChild(content);
+
+        chat.appendChild(msg);
+        scrollToBottom();
+        return content;
     }
-    send.disabled = false;
-    input.focus();
-}
 
-// --- Profile switching ---
-profile.addEventListener('change', () => {
-    statusBar.textContent = 'switched to ' + profile.value + ' profile';
-    setTimeout(() => {
-        pollHealth();
-    }, 1500);
-});
+    // -- Typing indicator ----------------------------------------
+    function showTypingIndicator() {
+        var indicator = document.createElement("div");
+        indicator.className = "typing-indicator";
+        indicator.id = "typing-indicator";
+        indicator.innerHTML =
+            '<div class="dots"><span></span><span></span><span></span></div>' +
+            '<span>Outlier is thinking...</span>';
+        chat.appendChild(indicator);
+        scrollToBottom();
+    }
 
-input.focus();
+    function removeTypingIndicator() {
+        var el = document.getElementById("typing-indicator");
+        if (el) el.remove();
+    }
+
+    // -- Scroll helper -------------------------------------------
+    function scrollToBottom() {
+        chat.scrollTop = chat.scrollHeight;
+    }
+
+    // -- Send message + stream response --------------------------
+    async function sendMessage() {
+        var text = prompt.value.trim();
+        if (!text || isStreaming) return;
+
+        isStreaming = true;
+        sendBtn.disabled = true;
+
+        // Show user message
+        var userContent = createMessage("user");
+        userContent.textContent = text;
+
+        // Clear input
+        prompt.value = "";
+        prompt.style.height = "auto";
+
+        // Show typing indicator
+        showTypingIndicator();
+
+        // Accumulator for raw markdown text
+        var rawText = "";
+        var botContent = null;
+
+        try {
+            var response = await fetch("/api/chat", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ message: text })
+            });
+
+            if (!response.ok) throw new Error("Server error: " + response.status);
+
+            var reader = response.body.getReader();
+            var decoder = new TextDecoder();
+
+            while (true) {
+                var result = await reader.read();
+                if (result.done) break;
+
+                var chunk = decoder.decode(result.value, { stream: true });
+                rawText += chunk;
+
+                // On first token, remove typing indicator and create bot message
+                if (!botContent) {
+                    removeTypingIndicator();
+                    botContent = createMessage("bot");
+                }
+
+                // Re-parse full accumulated markdown on every chunk
+                botContent.innerHTML = marked.parse(rawText);
+                scrollToBottom();
+            }
+        } catch (err) {
+            removeTypingIndicator();
+            if (!botContent) botContent = createMessage("bot");
+            botContent.innerHTML =
+                '<p style="color:#ef4444;">Error: ' + err.message + '</p>';
+        }
+
+        isStreaming = false;
+        sendBtn.disabled = false;
+        prompt.focus();
+    }
+
+    // -- Event listeners -----------------------------------------
+    sendBtn.addEventListener("click", sendMessage);
+
+    prompt.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage();
+        }
+    });
+})();
 </script>
+
 </body>
 </html>
