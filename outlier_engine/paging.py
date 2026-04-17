@@ -944,6 +944,24 @@ def load_hybrid_paged_qwen(
     model = model.to_empty(device=torch.device(device))
     model = model.to(dtype=torch.bfloat16)
 
+    # `to_empty()` materialises every parameter on `device` but does NOT copy
+    # the original data — nn.Parameters that were constructed under
+    # `torch.device("meta")` come out as uninitialised (effectively zero).
+    # Re-populate per-expert alpha values from the sidecar now that the
+    # tensors are on a real device.  Without this, every alpha stays 0.0 and
+    # the expert contribution to the shared+expert residual sum is nil — the
+    # model degrades to a base-only forward and produces wrong (but non-
+    # repetitive) output.
+    with torch.no_grad():
+        for layer_idx, layer in enumerate(model.model.layers):
+            if not isinstance(layer.mlp, _HybridPagedMLP):
+                continue
+            per_layer = layer_alphas.get(layer_idx) or {}
+            for expert_idx, alpha_val in per_layer.items():
+                param = getattr(layer.mlp, f"alpha_e{int(expert_idx)}", None)
+                if param is not None:
+                    param.data.fill_(float(alpha_val))
+
     page_manager = ExpertPageManager(
         model_dir,
         device=device,
