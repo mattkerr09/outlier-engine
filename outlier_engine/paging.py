@@ -909,19 +909,37 @@ def load_hybrid_paged_qwen(
         pad_token_id=cfg.get("pad_token_id"),
     )
 
+    # V3.2 publishes `moe_layer_indices` (and an alias `v3_2_moe_layers`)
+    # enumerating which layers are sparse MoE.  When the config declares
+    # either list, only those layers get `_HybridPagedMLP`; all other
+    # layers keep the stock Qwen2MLP that `Qwen2ForCausalLM(hf_cfg)`
+    # already constructed.  For legacy V1/V2 "fully sparse" checkpoints
+    # where every layer is MoE, neither key is present and the original
+    # "replace every layer" behaviour is preserved.
+    moe_indices_cfg = cfg.get("moe_layer_indices") or cfg.get("v3_2_moe_layers")
+    if moe_indices_cfg is not None:
+        moe_layer_set = {int(i) for i in moe_indices_cfg}
+    else:
+        moe_layer_set = None  # None = all layers are MoE (legacy semantics)
+
     with torch.device("meta"):
         model = Qwen2ForCausalLM(hf_cfg)
         for layer_idx, layer in enumerate(model.model.layers):
-            layer.mlp = _HybridPagedMLP(
-                cfg["hidden_dim"],
-                cfg["intermediate_dim"],
-                cfg.get("n_experts", 0),
-                cfg.get("top_k", 2),
-                layer_idx=layer_idx,
-                page_manager=None,
-                alphas=layer_alphas.get(layer_idx),
-                alpha_default=0.0 if alpha_sidecar_present else 1.0,
-            )
+            is_moe_layer = (moe_layer_set is None) or (layer_idx in moe_layer_set)
+            if is_moe_layer:
+                layer.mlp = _HybridPagedMLP(
+                    cfg["hidden_dim"],
+                    cfg["intermediate_dim"],
+                    cfg.get("n_experts", 0),
+                    cfg.get("top_k", 2),
+                    layer_idx=layer_idx,
+                    page_manager=None,
+                    alphas=layer_alphas.get(layer_idx),
+                    alpha_default=0.0 if alpha_sidecar_present else 1.0,
+                )
+            # else: dense layer — leave the stock Qwen2MLP in place.  It is
+            # populated below from the standard `mlp.gate_proj/up_proj/
+            # down_proj` safetensors keys.
 
     model = model.to_empty(device=torch.device(device))
     model = model.to(dtype=torch.bfloat16)
@@ -948,7 +966,18 @@ def load_hybrid_paged_qwen(
     for shard in sorted(model_dir.glob("*.safetensors")):
         with safe_open(str(shard), framework="pt", device="cpu") as f:
             for raw_key in f.keys():
-                if raw_key.startswith("base.model.layers.") and ".mlp.experts." in raw_key:
+                # Routed experts are loaded on demand by the page manager.
+                # Match both "base.model.layers.N.mlp.experts.M.*" (legacy
+                # V1/V2 "real" format) and "model.layers.N.mlp.experts.M.*"
+                # (V3.2 custom-modeling format, no `base.` prefix).
+                if (
+                    raw_key.startswith("base.model.layers.")
+                    or raw_key.startswith("model.layers.")
+                ) and ".mlp.experts." in raw_key:
+                    continue
+                # Per-expert alpha tensor in V3.2 is loaded via the alpha.json
+                # sidecar → layer_alphas; skip the safetensors copy here.
+                if raw_key.endswith(".mlp.alpha_values"):
                     continue
                 tensor = f.get_tensor(raw_key)
                 if raw_key.startswith("base.model."):
@@ -988,6 +1017,7 @@ def load_hybrid_paged_qwen(
                 elif suffix == "mlp.router.weight" and isinstance(layer.mlp, _HybridPagedMLP):
                     layer.mlp.router_weight.data.copy_(tensor.to(layer.mlp.router_weight.dtype))
                 elif suffix.startswith("mlp.shared_expert.") and isinstance(layer.mlp, _HybridPagedMLP):
+                    # Legacy V1/V2 "real" format: mlp.shared_expert.gate_W/up_W/down_W
                     shared = layer.mlp.shared
                     proj = suffix[len("mlp.shared_expert."):]
                     if proj == "gate_W":
@@ -1002,6 +1032,34 @@ def load_hybrid_paged_qwen(
                         q, s = quantize_to_int8(tensor)
                         shared.down_w.copy_(q)
                         shared.down_s.copy_(s.to(shared.down_s.dtype))
+                elif suffix in (
+                    "mlp.gate_proj.weight",
+                    "mlp.up_proj.weight",
+                    "mlp.down_proj.weight",
+                ):
+                    # V3.2 custom-modeling format: every MoE layer has a
+                    # shared dense path stored under `mlp.{gate,up,down}_proj`
+                    # and every dense layer has only this.
+                    proj_name = suffix[len("mlp."):-len(".weight")]  # "gate_proj" etc.
+                    if isinstance(layer.mlp, _HybridPagedMLP):
+                        # MoE layer — dense keys populate the shared (_Int8SwiGLU) expert.
+                        shared = layer.mlp.shared
+                        q, s = quantize_to_int8(tensor)
+                        if proj_name == "gate_proj":
+                            shared.gate_w.copy_(q)
+                            shared.gate_s.copy_(s.to(shared.gate_s.dtype))
+                        elif proj_name == "up_proj":
+                            shared.up_w.copy_(q)
+                            shared.up_s.copy_(s.to(shared.up_s.dtype))
+                        elif proj_name == "down_proj":
+                            shared.down_w.copy_(q)
+                            shared.down_s.copy_(s.to(shared.down_s.dtype))
+                    else:
+                        # Dense layer — stock Qwen2MLP, copy weight directly
+                        # into gate_proj/up_proj/down_proj.weight.
+                        module = getattr(layer.mlp, proj_name, None)
+                        if module is not None and hasattr(module, "weight"):
+                            module.weight.data.copy_(tensor.to(module.weight.dtype))
 
     model.eval()
     model.outlier_device = torch.device(device)
