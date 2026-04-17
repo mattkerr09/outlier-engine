@@ -17,3 +17,6 @@ checkpoints/**/*.pt
 data/distillation/training_log.jsonl
 desktop_app/dist/
 desktop_app/pyinstaller_build/
+hf_cleanup_day11/
+.outlier_secrets
+*.outlier_secrets*
