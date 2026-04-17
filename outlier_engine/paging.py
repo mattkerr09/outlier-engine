@@ -942,7 +942,12 @@ def load_hybrid_paged_qwen(
             # down_proj` safetensors keys.
 
     model = model.to_empty(device=torch.device(device))
-    model = model.to(dtype=torch.bfloat16)
+    # V3.2 safetensors store FP32 weights. Stock HF's trust_remote_code path
+    # casts to FP16 (matches the modeling file's computations). Previously the
+    # paged loader cast to BF16 which accumulates ~20% L2 drift over 28 layers
+    # and shifts logit ordering — e.g. "Paris" drops from top-1 to rank 4.
+    # Matching stock HF with FP16 closes that drift.
+    model = model.to(dtype=torch.float16)
 
     # `to_empty()` materialises every parameter on `device` but does NOT copy
     # the original data — nn.Parameters that were constructed under
