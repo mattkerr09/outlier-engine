@@ -242,6 +242,69 @@ def health():
     return resp
 
 
+# ---------------------------------------------------------------------------
+# HF model tier management (Day 17 mega sprint: Track 2.6)
+# ---------------------------------------------------------------------------
+MODEL_TIERS = {
+    "nano": {"repo": "Outlier-Ai/Outlier-Nano-1.7B-MLX-4bit", "size_gb": 0.96, "ram_req_gb": 2, "display": "Outlier Nano (1.7B)"},
+    "lite": {"repo": "Outlier-Ai/Outlier-Lite-7B-MLX-4bit", "size_gb": 4.36, "ram_req_gb": 6, "display": "Outlier Lite (7B)"},
+    "compact": {"repo": "Outlier-Ai/Outlier-Compact-14B-MLX-4bit", "size_gb": 8.42, "ram_req_gb": 12, "display": "Outlier Compact (14B)"},
+}
+MODEL_CACHE_DIR = DATA_DIR / "models"
+MODEL_CACHE_DIR.mkdir(exist_ok=True)
+
+_download_state = {"tier": None, "progress": 0, "status": "idle", "error": None}
+
+
+def _tier_local_path(tier: str) -> Path:
+    return MODEL_CACHE_DIR / tier
+
+
+def _tier_is_downloaded(tier: str) -> bool:
+    p = _tier_local_path(tier)
+    return p.exists() and (p / "config.json").exists()
+
+
+@app.get("/api/models/available")
+def models_available():
+    out = {}
+    for tier, meta in MODEL_TIERS.items():
+        out[tier] = {**meta, "downloaded": _tier_is_downloaded(tier), "local_path": str(_tier_local_path(tier))}
+    return out
+
+
+@app.get("/api/models/download-status")
+def models_download_status():
+    return _download_state
+
+
+def _download_tier_background(tier: str):
+    meta = MODEL_TIERS[tier]
+    _download_state.update({"tier": tier, "status": "downloading", "progress": 0, "error": None})
+    try:
+        from huggingface_hub import snapshot_download
+        snapshot_download(
+            repo_id=meta["repo"],
+            local_dir=str(_tier_local_path(tier)),
+            local_dir_use_symlinks=False,
+        )
+        _download_state.update({"status": "done", "progress": 100})
+    except Exception as exc:
+        _download_state.update({"status": "error", "error": str(exc)})
+
+
+@app.post("/api/models/download/{tier}")
+def models_download(tier: str):
+    if tier not in MODEL_TIERS:
+        return {"error": f"unknown tier; options: {list(MODEL_TIERS.keys())}"}
+    if _tier_is_downloaded(tier):
+        return {"tier": tier, "already_downloaded": True, "path": str(_tier_local_path(tier))}
+    if _download_state["status"] == "downloading":
+        return {"error": f"already downloading {_download_state['tier']}"}
+    threading.Thread(target=_download_tier_background, args=(tier,), daemon=True).start()
+    return {"tier": tier, "started": True, "repo": MODEL_TIERS[tier]["repo"]}
+
+
 if __name__ == "__main__":
     print(f"Outlier Desktop {APP_VERSION} starting on http://127.0.0.1:8765")
     if SKIP_MODEL:
