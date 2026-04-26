@@ -20,3 +20,14 @@ desktop_app/pyinstaller_build/
 hf_cleanup_day11/
 .outlier_secrets
 *.outlier_secrets*
+
+# --- OUTLIER-GIT-HYGIENE-001 (Day 26) ---
+# Cluster artifacts (large, regenerable from cloud runs)
+cluster_results/
+# Teacher cache (huge — distillation inputs)
+data/teacher_cache/
+# V4 artifacts dump (eval outputs, not source)
+v4_artifacts/
+# Checkpoints — keep ignoring weights, also ignore subdirs that are pure outputs
+checkpoints/outlier-70b-v3.2-paged/
+checkpoints/qwen25-32b-base/
